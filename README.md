@@ -99,6 +99,36 @@ s6  详表生成（FC 16 列 + RemakeFunction/Block + EvoScene/Function/Block + 
 代码 GPL-3.0（继承 lxr2010/TrailsInTheSkyRemakeScriptAligner，吸收其 synonyms.py）。
 数据来源与署名见 [NOTICE](NOTICE)。
 
+## 鸣谢
+
+本项目受以下开源项目启发或直接受益：
+
+- [TrailsInTheSkyRemakeScriptAligner](https://github.com/lxr2010/TrailsInTheSkyRemakeScriptAligner) — 线性匹配前作（synonyms 归一化、additional_voice 数据、提取器设计）
+- [SoraVoiceScripts](https://github.com/ZhenjianYang/SoraVoiceScripts) — EVO 语音脚本（evo_structure 数据之源）
+- [KuroTools](https://github.com/nnguyen259/KuroTools) — scena 反编译
+- [kuro_dlc_tool](https://github.com/eArmada8/kuro_dlc_tool) — script.pac 解包
+- [Ingert](https://github.com/Aureole-Suite/Ingert) — scena 反编译（另一方案）
+
+> ### Acknowledgements
+>
+> This project is inspired by and directly benefits from the open-source projects listed above.
+
+---
+
+## 版权声明
+
+- 本仓库的**脚本代码**以 [GPL-3.0](LICENSE) 发布。
+- 本项目处理涉及的游戏脚本文本、语音、图像及其他资产，其著作权与相关权利**归原游戏公司及权利人所有**（© Nihon Falcom Corp. 及各地区发行商）。**本项目对这些游戏资产不主张任何权利，并放弃一切权利主张**；所分发的派生数据（evo_structure 等）仅为结构与索引信息，随附上游署名（见 [NOTICE](NOTICE)），仅供学习研究。
+- 仅用于学习、研究与非商业交流，**严禁**将本项目代码、处理结果或衍生资源用于任何商业用途。
+- 使用者应自行确保其行为符合所在地法律法规及相关游戏/平台协议。
+
+> ### Copyright
+>
+> - The **scripts** in this repository are licensed under [GPL-3.0](LICENSE).
+> - All game scripts, voices, images, and related assets processed by this project belong to the original rights holders (© Nihon Falcom Corp. and publishers). **The author claims no rights over these game assets and waives any such claims.** Derived data files are structure/index information only, distributed with upstream attribution (see [NOTICE](NOTICE)) for study and research.
+> - For learning, research, and non-commercial use only. Commercial use is strictly prohibited.
+> - Users are responsible for compliance with applicable laws and agreements.
+
 ## 已知边界
 
 - 无候选行中 ~97% 为「EVO 无此文本」（Remake 新增/无语音台词），属内容上限；
