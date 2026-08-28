@@ -4,11 +4,12 @@
 对比旧版「角色码+文本精确匹配」（改写导致候选空）。
 """
 import json, csv, sys
+import os
 from collections import defaultdict, Counter
-sys.path.insert(0, '/var/minis/workspace/TrailsInTheSkyRemakeScriptAligner')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'TrailsInTheSkyRemakeScriptAligner'))
 from synonyms import normalize
 from rapidfuzz import fuzz
-W = '/var/minis/workspace'
+W = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 evo = json.load(open(f'{W}/evo_structure.json'))
 remake = json.load(open(f'{W}/remake_structure.json'))

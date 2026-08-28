@@ -5,10 +5,11 @@
 块候选：Remake 块的锚点 -> EVO 块（投票），判定 1:1 / 1:N / 0锚点。
 """
 import json, sys
+import os
 from collections import defaultdict, Counter
-sys.path.insert(0, '/var/minis/workspace/TrailsInTheSkyRemakeScriptAligner')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'TrailsInTheSkyRemakeScriptAligner'))
 from synonyms import normalize
-W = '/var/minis/workspace'
+W = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 evo = json.load(open(f'{W}/evo_structure.json'))
 remake = json.load(open(f'{W}/remake_structure.json'))

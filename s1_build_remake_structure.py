@@ -7,9 +7,10 @@
       (JumpWhenFalse 的真分支 / JumpWhenTrue 的假分支 也记为顺序边 cond_true/cond_false)
 """
 import ast, glob, json, re
+import os
 from collections import OrderedDict, Counter
-W = '/var/minis/workspace'
-sys_path = None
+from paths import W, resolve, require
+GAME_S1 = 'fc'   # 由 __main__ 按 argv 设置，决定接受的 Cmd_text 变体
 
 def parse_remake_ast(path):
     src = open(path, encoding='utf-8').read()
@@ -65,7 +66,10 @@ def parse_remake_ast(path):
         elif name == 'Command':
             if cur_func is None or len(node.args) < 2: continue
             cmd_type = node.args[0].value
-            if cmd_type not in ('Cmd_text_00', 'Cmd_text_06'): continue
+            # sc: 00/06=普通对话, 13=带立绘对话(UNKNOWN_05_13 为其反编译别名), 08=分支选项/系统文本
+            ok_types = ('Cmd_text_00', 'Cmd_text_06') if GAME_S1 == 'fc' else \
+                       ('Cmd_text_00', 'Cmd_text_06', 'Cmd_text_13', 'UNKNOWN_05_13', 'Cmd_text_08')
+            if cmd_type not in ok_types: continue
             if not isinstance(node.args[1], ast.List): continue
             spk = None; texts = []
             for elt in node.args[1].elts:
@@ -96,22 +100,34 @@ def parse_remake_ast(path):
 
 if __name__ == '__main__':
     import sys
-    sys.path.insert(0, '/var/minis/workspace/TrailsInTheSkyRemakeScriptAligner')
+    # 用法: python s1_build_remake_structure.py [fc|sc] [反编译py目录]
+    #   目录省略时用内置默认(fc: remake_jp, sc: remake2nd_demo/py，相对数据根W)
     from synonyms import normalize
+    args = [a for a in sys.argv[1:] if not a.startswith('-')]
+    GAME = (args[0].lower() if args else 'fc')
+    assert GAME in ('fc', 'sc'), f'未知游戏代号: {GAME}'
+    GAME_S1 = GAME
+    PY_DIR = args[1] if len(args) > 1 else {'fc': 'remake_jp', 'sc': 'remake2nd_demo/py'}[GAME]
+    # sc 扫描全部 scena 脚本（含 e*/system/sys_event——与 scena_voice_kuro_extractor 一致）
+    PATTERN = 'mp*.py' if GAME == 'fc' else '*.py'
+    # fc 保持原文件名（下游依赖），sc 带后缀
+    OUT = os.path.join(W, 'remake_structure.json' if GAME == 'fc' else f'remake_structure_{GAME}.json')
     remake_structure = {}
-    for f in glob.glob(f'{W}/remake_jp/mp*.py'):
-        scene = f.split('/')[-1].replace('.py', '')
+    _cand = os.path.join(W, PY_DIR) if not os.path.isabs(PY_DIR) else PY_DIR
+    _base = _cand if os.path.isdir(_cand) else PY_DIR   # 兼容 cwd 相对路径
+    for f in glob.glob(os.path.join(_base, PATTERN)):
+        scene = os.path.basename(f)[:-3]
         try:
             funcs = parse_remake_ast(f)
             if funcs: remake_structure[scene] = funcs
         except Exception as e:
             print(f'ERR {scene}: {e}')
-    json.dump(remake_structure, open(f'{W}/remake_structure.json', 'w'), ensure_ascii=False)
+    json.dump(remake_structure, open(OUT, 'w'), ensure_ascii=False)
     nf = nb = ne = nl = 0
     for sc, funcs in remake_structure.items():
         nf += len(funcs)
         for fn, f in funcs.items():
             nb += len(f['blocks']); ne += len(f['edges']); nl += sum(len(b) for b in f['blocks'].values())
-    print(f'Remake: {len(remake_structure)}场景 函数{nf} 块{nb} 边{ne} 台词{nl}')
+    print(f'Remake[{GAME}] -> {os.path.basename(OUT)}: {len(remake_structure)}场景 函数{nf} 块{nb} 边{ne} 台词{nl}')
     rc = Counter(e['type'] for sc in remake_structure.values() for f in sc.values() for e in f['edges'])
     print('边类型:', dict(rc))

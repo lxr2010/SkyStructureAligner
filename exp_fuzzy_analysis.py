@@ -2,11 +2,12 @@
 """模糊检索救悬空块：抽改写台词样本，rapidfuzz 找 EVO top-k，对比 gt 正确文本。
 """
 import json, csv, sys, re
+import os
 from collections import defaultdict, deque
-sys.path.insert(0, '/var/minis/workspace/TrailsInTheSkyRemakeScriptAligner')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'TrailsInTheSkyRemakeScriptAligner'))
 from synonyms import normalize
 from rapidfuzz import fuzz
-W = '/var/minis/workspace'
+W = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 evo = json.load(open(f'{W}/evo_structure.json'))
 remake = json.load(open(f'{W}/remake_structure.json'))

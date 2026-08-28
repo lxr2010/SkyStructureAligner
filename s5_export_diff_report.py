@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """导出所有「错配 + 比gt少匹配」台词的完整结构/控制流/位置/类型，供检查。"""
 import json, csv, sys
+import os
 from collections import defaultdict, Counter
-sys.path.insert(0, '/var/minis/workspace/TrailsInTheSkyRemakeScriptAligner')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'TrailsInTheSkyRemakeScriptAligner'))
 from synonyms import normalize
-W = '/var/minis/workspace'
+W = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 evo = json.load(open(f'{W}/evo_structure.json'))
 remake = json.load(open(f'{W}/remake_structure.json'))

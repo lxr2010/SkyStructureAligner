@@ -5,10 +5,11 @@
 分析: 出边/入边类型、相邻块锚点数、块内台词(短句=EVO多匹配/改写=EVO无匹配)。
 """
 import json, sys
+import os
 from collections import defaultdict, Counter
-sys.path.insert(0, '/var/minis/workspace/TrailsInTheSkyRemakeScriptAligner')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'TrailsInTheSkyRemakeScriptAligner'))
 from synonyms import normalize
-W = '/var/minis/workspace'
+W = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 evo = json.load(open(f'{W}/evo_structure.json'))
 remake = json.load(open(f'{W}/remake_structure.json'))

@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+data/
+*.pyc
+s6_extract_cache.json
+llm_*.json
