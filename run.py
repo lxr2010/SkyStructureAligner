@@ -47,7 +47,7 @@ def run(cmd):
 def main():
     ap = argparse.ArgumentParser(description='SkyStructureAligner 一键匹配')
     ap.add_argument('--game', required=True, choices=['fc', 'sc', '3rd'], help='fc=空轨1st(Remake), sc=2nd(Demo/正式), 3rd')
-    ap.add_argument('--py-dir', required=not (sys.argv[1:2] == ['--download-only']), help='Remake 日文反编译 py 目录(s1 输入)')
+    ap.add_argument('--py-dir', default=None, help='Remake 日文反编译 py 目录(s1 输入；--download-only 时可省)')
     ap.add_argument('--py-dir-sc', default=None, help='简中反编译 py 目录(s6 翻译列, 可选)')
     ap.add_argument('--skip-download', action='store_true', help='跳过资产下载')
     ap.add_argument('--download-only', action='store_true', help='仅下载数据资产')
