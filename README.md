@@ -93,6 +93,7 @@ s6  详表生成（FC 16 列 + RemakeFunction/Block + EvoScene/Function/Block + 
 | `evo_structure.json / _sc / _3rd` | EVO 三部曲控制流结构（源自 SoraVoiceScripts，解析含 NpcTalk/外字/注音/尾部找回） |
 | `additional_voice_{fc,sc,3rd}.json` | 脚本外语音（继承自前项目） |
 | `speaker_map_{fc,sc}.json` | 说话人映射种子 |
+| `t_voice_{fc,sc}.json` | Remake 语音表（table.pac→t_voice.tbl→json；RemakeVoiceFilename 列数据源，21% 台词带内嵌语音ID） |
 
 ## 许可
 

@@ -23,8 +23,8 @@ DATA_DIR = os.path.join(HERE, 'data')
 RELEASE_TAG = 'v1.0.0'
 BASE = f'https://github.com/lxr2010/SkyStructureAligner/releases/download/{RELEASE_TAG}'
 ASSETS = {
-    'fc':  ['evo_structure.json', 'additional_voice_fc.json', 'speaker_map_fc.json'],
-    'sc':  ['evo_structure_sc.json', 'additional_voice_sc.json', 'speaker_map_sc.json'],
+    'fc':  ['evo_structure.json', 'additional_voice_fc.json', 'speaker_map_fc.json', 't_voice_fc.json'],
+    'sc':  ['evo_structure_sc.json', 'additional_voice_sc.json', 'speaker_map_sc.json', 't_voice_sc.json'],
     '3rd': ['evo_structure_3rd.json', 'additional_voice_3rd.json'],
 }
 

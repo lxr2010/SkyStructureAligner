@@ -232,6 +232,10 @@ for sc_, funcs_ in json.load(open(require('evo_structure_sc.json'), encoding='ut
 for x in json.load(open(require('additional_voice_sc.json'), encoding='utf-8')):
     vid_text.setdefault(x['voice_id'][:-1], x['text'])
 
+# Remake 语音表(t_voice.tbl -> json): id -> {f:文件名, t:字幕文本}；无则 RemakeVoiceFilename 列留空
+_tv_p = resolve(f't_voice_{GAME}.json')
+t_voice = json.load(open(_tv_p, encoding='utf-8')) if _tv_p else {}
+
 def evo_struct(vid):
     b = vid_to_evoblk.get(vid)
     return f'{b[0]}/{b[1]}/{b[2]}' if b else ''
@@ -243,7 +247,7 @@ for (c_, n_) in evo_key:
 # ---------- 组装 ----------
 COLS = ['RemakeVoiceID', 'RemakeScenaScriptFilename', 'RemakeScenaScriptLineno',
         'RemakeScenaScriptAddStructLineno', 'RemakeScenaScriptTranslationLineno',
-        'RemakeScenaScriptTranslationAddStructLineno', 'RemakeFunction', 'RemakeBlock',
+        'RemakeScenaScriptTranslationAddStructLineno', 'RemakeFunction', 'RemakeBlock', 'RemakeVoiceFilename',
         'OldScriptId', 'OldCharacterId', 'OldVoiceFilename', 'MatchType',
         'SpeakerCheck', 'RemakeVoiceCategory', 'RemakeVoiceTranslation',
         'RemakeVoiceText', 'OldVoiceText', 'EvoScene', 'EvoFunction', 'EvoBlock',
@@ -278,6 +282,9 @@ for fn in sorted(jp):
             review_m[(scene, c['line'])] = m
             row['RemakeFunction'] = m['Function']   # 所属结构函数（TK_/EV_/QS_/ST_…）
             row['RemakeBlock'] = m['Block']         # 所属基本块（Loc_xxx/_entry）
+            _rid = m.get('RemakeVoiceId')
+            if _rid:
+                row['RemakeVoiceFilename'] = t_voice.get(str(_rid), {}).get('f', '')
             row['SpeakerCheck'] = m['SpeakerMatch'] if m['SpeakerMatch'] != '对应' else ''
         if m is None:
             row['MatchType'] = 'unmatched'
@@ -322,7 +329,7 @@ with open(OUT, 'w', newline='', encoding='utf-8') as f:
 # ---------- 说话人校对清单（长表：一行一个候选，经 RemakeVoiceID 关联主表） ----------
 REVIEW = os.path.join(W, f'speaker_review_{GAME}.csv')
 REVIEW_COLS = ['RemakeVoiceID', 'RemakeScenaScriptFilename', 'RemakeScenaScriptLineno',
-               'RemakeFunction', 'RemakeBlock', 'RemakeNote', 'ReviewReason', 'SpeakerChar',
+               'RemakeFunction', 'RemakeBlock', 'RemakeVoiceFilename', 'RemakeNote', 'ReviewReason', 'SpeakerChar',
                'RemakeVoiceText', 'RemakeVoiceTranslation',
                'CandRole', 'CandVoiceId', 'CandChar', 'CandVoiceText',
                'CandEvoScene', 'CandEvoFunction', 'CandEvoBlock', 'EvoNote', 'Verdict']
@@ -358,6 +365,7 @@ for r in out:
             'RemakeScenaScriptLineno': line,
             'RemakeFunction': r['RemakeFunction'],
             'RemakeBlock': r['RemakeBlock'],
+            'RemakeVoiceFilename': r['RemakeVoiceFilename'],
             'RemakeNote': remake_note(scene, r['RemakeFunction']),
             'ReviewReason': reason,
             'SpeakerChar': m['SpeakerChar'],

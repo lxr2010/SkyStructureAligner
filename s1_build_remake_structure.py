@@ -71,17 +71,23 @@ def parse_remake_ast(path):
                        ('Cmd_text_00', 'Cmd_text_06', 'Cmd_text_13', 'UNKNOWN_05_13', 'Cmd_text_08')
             if cmd_type not in ok_types: continue
             if not isinstance(node.args[1], ast.List): continue
-            spk = None; texts = []
+            spk = None; texts = []; rid = None
             for elt in node.args[1].elts:
                 if isinstance(elt, ast.Call) and getattr(elt.func, 'id', '') == 'INT' and elt.args and isinstance(elt.args[0], ast.Constant):
                     if spk is None: spk = elt.args[0].value
                 elif isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                     texts.append(elt.value)
+            # 内嵌语音表ID: INT(11), INT(id) 相邻对 -> t_voice.tbl 行号（Remake 自有语音文件名）
+            _is_int = lambda e: isinstance(e, ast.Call) and getattr(e.func, 'id', '') == 'INT' and e.args and isinstance(e.args[0], ast.Constant)
+            for a, b in zip(node.args[1].elts, node.args[1].elts[1:]):
+                if _is_int(a) and a.args[0].value == 11 and _is_int(b):
+                    rid = b.args[0].value
+                    break
             text = ''.join(texts)
             text = re.sub(r'<[^>]*>', '', text)  # 去所有 <...> 控制码标记
             if text:
                 ensure_block()
-                funcs[cur_func]['blocks'][cur_block].append({'speaker': spk, 'text': text})
+                funcs[cur_func]['blocks'][cur_block].append({'speaker': spk, 'text': text, 'rid': rid})
         elif name == 'JUMP':
             if cur_func is not None and cur_block is not None:
                 add_edge(cur_block, node.args[0].value, 'jump')

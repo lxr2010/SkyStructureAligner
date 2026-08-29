@@ -142,7 +142,7 @@ block_segs = {}
 for sc, funcs in remake.items():
     for fn, f in funcs.items():
         for lab, blk in f['blocks'].items():
-            toks = [(clean_final(t['text']), rem_char(t['speaker'], sc), vid_to_evoblk.get(evo_key[(rem_char(t['speaker'], sc), clean_final(t['text']))][0]) if (rem_char(t['speaker'], sc), clean_final(t['text'])) in anchor_keys else None, t['text'], t['speaker']) for t in blk]
+            toks = [(clean_final(t['text']), rem_char(t['speaker'], sc), vid_to_evoblk.get(evo_key[(rem_char(t['speaker'], sc), clean_final(t['text']))][0]) if (rem_char(t['speaker'], sc), clean_final(t['text'])) in anchor_keys else None, t['text'], t['speaker'], t.get('rid')) for t in blk]
             segs = split_block(toks)
             info = []
             for seg in segs:
@@ -200,7 +200,7 @@ while changed:
                     valid = [t for t in all_cand if evo_block_char(evo[escene][efn]['blocks'][t]) == r_char]
             if len(valid) == 1:
                 blk_data = remake[rscene][rfn]['blocks'].get(rt, [])
-                block_segs[rnxt] = [([(clean_final(t['text']), rem_char(t['speaker'], rscene), None, t['text'], t['speaker']) for t in blk_data], (escene, efn, valid[0]))]
+                block_segs[rnxt] = [([(clean_final(t['text']), rem_char(t['speaker'], rscene), None, t['text'], t['speaker'], t.get('rid')) for t in blk_data], (escene, efn, valid[0]))]
                 propagated.add(rnxt); aligned.add(rnxt); changed = True
 
 def refine_segment(seg, evo_blk):
@@ -297,7 +297,7 @@ for rblk, segs in block_segs.items():
     for seg, evo_blk in segs:
         block_vids = evo_block_vids.get(evo_blk, set()) if evo_blk is not None else set()
         refine = refine_segment(seg, evo_blk) if evo_blk is not None else {}
-        for norm, char, ablk, text, spk in seg:
+        for norm, char, ablk, text, spk, rid in seg:
             # 候选（script_data + additional_voice；标点边缘放松二级键兜底）
             cand, relaxed = get_cands(char, norm)
             cand = list(cand)
@@ -355,7 +355,7 @@ for rblk, segs in block_segs.items():
                     spk_match = f'同文本异角色({",".join(others[:4])})'
             eblk = vid_to_evoblk.get(uniq[0]) if uniq else None
             out.append((sc, fn, lab, text, spk, char, uniq[0] if uniq else '', '|'.join(uniq), ty, '|'.join(src), spk_match,
-                        eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else ''))
+                        eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', rid))
 
 # ---------- multi 夹逼：用邻行已定 vid 的末四位连续性消歧 ----------
 # 同时覆盖: 无候选但全局存在段外差分候选(2-4条)的行（QS测验等块对齐失败区域）
@@ -400,7 +400,7 @@ for (sc, fn), seq in seq_by_fn.items():
             src_new = '|'.join(src_l + [how + ('·段外' if ty_ == '无候选' else '')])
             eblk = vid_to_evoblk.get(pick)
             out[i] = (*out[i][:6], pick, out[i][7], '唯一', src_new, out[i][10],
-                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '')
+                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', out[i][14])
             bracket_stat[how + ('·段外' if ty_ == '无候选' else '')] += 1
 
 # ---------- 块内连续段救援：整块无候选的行，全局候选按台词顺序串成严格递增 vid 链 ----------
@@ -505,7 +505,7 @@ for (sc, fn, lab), idxs in blk_rows.items():
                 sm_ = f'链内角色不符(语音角色{v[:3]})'
                 run_stat['链内角色不符'] += 1
             out[i] = (*out[i][:6], v, out[i][7], '唯一', src_tag, sm_,
-                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '')
+                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', out[i][14])
         run_stat[src_tag.split('|')[1]] += len(best)
         # 改写行的位置约束模糊：块内无精确候选的行，在两侧已定 vid 夹出的同场景窗口内模糊匹配
         order = [i for i in idxs]
@@ -537,13 +537,13 @@ for (sc, fn, lab), idxs in blk_rows.items():
                 run_stat['链内角色不符'] += 1
             eblk = vid_to_evoblk.get(bv)
             out[i] = (*out[i][:6], bv, out[i][7], '唯一', 'script|块内连续段·模糊', sm_,
-                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '')
+                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', out[i][14])
             run_stat['块内连续段·模糊'] += 1
 
 OUT = os.path.join(W, f'my_match_result{SUF}.csv')
 with open(OUT, 'w', newline='', encoding='utf-8') as f:
     w = csv.writer(f)
-    w.writerow(['Scene', 'Function', 'Block', 'RemakeVoiceText', 'Speaker', 'SpeakerChar', 'MyVoiceId', 'Candidates', 'MatchType', 'Source', 'SpeakerMatch', 'EvoScene', 'EvoFunction', 'EvoBlock'])
+    w.writerow(['Scene', 'Function', 'Block', 'RemakeVoiceText', 'Speaker', 'SpeakerChar', 'MyVoiceId', 'Candidates', 'MatchType', 'Source', 'SpeakerMatch', 'EvoScene', 'EvoFunction', 'EvoBlock', 'RemakeVoiceId'])
     for row in out:
         w.writerow(row)
 
