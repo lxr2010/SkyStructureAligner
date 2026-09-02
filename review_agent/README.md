@@ -88,6 +88,26 @@ uv run python rt.py autocheck <场景> <函数>   # 单块
 | `review_pack/progress.log` | 每块完成摘要（含各 verdict 计数） |
 | `review_pack/<场景>_<函数>.json` | 工作包（review_batch.py 生成） |
 
+## 人工复核：match_voice_checker.html
+
+自动校对 + `apply_verdicts.py` 产出 `*_detailed_corrected.csv` 之后，用**语音试听检查页**做逐行人工复核。
+单文件网页（无构建、无依赖），支持：
+
+- EVO（og​​g）与 Remake（opus）双侧试听，本地拆包语音优先、在线 CDN 回退，双音量独立调节
+- 多选过滤器（脚本/判定/类型/说话人）、判定 chips、人工状态筛选、行多选/反选/导出
+- 行级人工校对编辑器：候选下拉（↑↓/滚轮切换并自动试听）、状态随语音自动联动、
+  翻页/刷新不丢（localStorage）、导出 `manual_verdicts_<N>.jsonl`
+- `apply_manual_verdicts.py`：把人工裁定应用到 `*_detailed_corrected.csv`，产出
+  `data/match_result_*_detailed_manual.csv`（change 行反查 EVO 结构补全 Old\*/Evo\* 列）+
+  `manual_apply_summary.json` 应用摘要；网页端「导出CSV(含人工)」为同规则的轻量版
+
+```bash
+python voice_check_server.py        # 起服务（--voice 可指定本地语音目录），浏览器开
+                                    # http://127.0.0.1:8613/review_agent/match_voice_checker.html
+```
+
+详细用法见 **[manual_review_guide.md](manual_review_guide.md)**（图文版）。
+
 ## 实测数据
 
 | 模型 | 块行数 | 工具调用 | token | 耗时 | 完成度 | 质量 |

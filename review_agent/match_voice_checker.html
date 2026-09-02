@@ -1,0 +1,1279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>match_result 人工校对 · 语音试听</title>
+<style>
+  :root{
+    --bg:#121417; --panel:#1b1f24; --panel2:#22272e; --line:#2e353f;
+    --fg:#dce3ea; --dim:#8b97a3; --acc:#4da3ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+    --mono:Consolas,"Courier New",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 "Segoe UI",system-ui,sans-serif}
+  header{position:sticky;top:0;z-index:10;background:var(--panel);border-bottom:1px solid var(--line);padding:10px 16px}
+  h1{font-size:16px;margin:0 0 8px}
+  h1 small{color:var(--dim);font-weight:normal;margin-left:8px}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:6px}
+  input[type=text],select,button{background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 9px;font-size:13px}
+  input[type=text]{min-width:170px}
+  button{cursor:pointer}
+  button:hover{border-color:var(--acc)}
+  button.primary{background:#1f4d7a;border-color:#2b6cb0}
+  label.chk{display:flex;gap:5px;align-items:center;color:var(--dim);font-size:13px;cursor:pointer;white-space:nowrap}
+  #loadInfo{color:var(--dim);font-size:13px}
+  #nowPlaying{font-family:var(--mono);font-size:12px;color:var(--warn);min-height:16px}
+  #nowPlaying a{color:var(--acc)}
+  #stats{font-size:13px;color:var(--dim)}
+  #stats b{color:var(--fg)}
+  main{padding:12px 16px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border-bottom:1px solid var(--line);padding:5px 8px;text-align:left;vertical-align:top}
+  th{position:sticky;top:var(--hdr-h,0px);z-index:5;background:var(--panel);color:var(--dim);font-weight:600;cursor:pointer;user-select:none;white-space:nowrap}
+  th.sorted-asc::after{content:" ▲"} th.sorted-desc::after{content:" ▼"}
+  td.num{font-family:var(--mono);color:var(--dim);white-space:nowrap}
+  td.jp{min-width:210px} td.cn{min-width:190px;color:#cfd8e0}
+  tr.data{cursor:pointer}
+  tr.playing{background:#20344a !important;outline:1px solid var(--acc)}
+  tr.data:hover{background:#20262e}
+  .vf{font-family:var(--mono);font-size:12px;white-space:nowrap}
+  .vf a{color:var(--acc);text-decoration:none}
+  .vf a:hover{text-decoration:underline}
+  .vf .rv{color:#6e5b2e;font-size:11px}
+  .vf a.miss{color:var(--bad)}
+  .btn-play{padding:1px 8px;font-size:12px;border-radius:4px}
+  .btn-play.r{color:#d29922;border-color:#5a4a1e}
+  .btn-play.e{color:#4da3ff;border-color:#1f4d7a}
+  .cands{display:flex;flex-wrap:wrap;margin:2px 0}
+  .btn-cand{font-family:var(--mono);font-size:11px;padding:0 6px;border-radius:4px;margin:1px 2px 1px 0;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .cand-info{color:#7d8a96;font-size:11px;margin-right:6px}
+  .tag{display:inline-block;padding:0 7px;border-radius:9px;font-size:12px;white-space:nowrap}
+  .tag.matched{background:#12351f;color:#57ab5a}
+  .tag.multi{background:#3a2d12;color:#d29922}
+  .tag.voiceonly{background:#1a2c47;color:#6ea8ff}
+  .tag.unmatched{background:#3d1a1a;color:#f85149}
+  .tag.warn{background:#3a2d12;color:#d29922}
+  .tag.bad{background:#3d1a1a;color:#f85149}
+  .tag.ok-dim{background:#152a1b;color:#4a8f52}
+  .tag.gray{background:#26303b;color:#8b97a3}
+  .tag.blue{background:#1a2c47;color:#6ea8ff}
+  .tag.method{background:#26303b;color:#8b97a3}
+  .anno{color:var(--dim);font-size:12px;max-width:400px}
+  .anno .reuse{color:var(--warn)}
+  .anno .desc{display:inline-block;vertical-align:top;max-height:34px;overflow:hidden;cursor:zoom-in}
+  .anno .desc.open{max-height:none;cursor:zoom-out;white-space:pre-wrap}
+  .pager{display:flex;gap:8px;align-items:center;margin:10px 0;color:var(--dim)}
+  .pager button{padding:2px 10px}
+  audio{width:420px;height:32px}
+  .hint{color:var(--dim);font-size:12px}
+  .drop{border:2px dashed var(--line);border-radius:8px;padding:24px;text-align:center;color:var(--dim)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center}
+  .chip{font-size:12px;padding:1px 9px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--dim);cursor:pointer}
+  .chip b{color:var(--fg)}
+  .chip.on{border-color:var(--acc);color:var(--acc)}
+  .chip-sep{color:var(--line);margin:0 2px}
+  td.sel, th.sel{width:30px;text-align:center;padding:5px 4px}
+  th.sel input, td.sel input{cursor:pointer}
+  tr.selt{background:#152119}
+  tr.selt:hover{background:#1b2a20}
+  tr.playing.selt{background:#20344a !important}
+  #selBar button{padding:3px 9px;font-size:12px}
+  .btn-play.r.dim{opacity:.4}
+  /* 多选过滤器 */
+  .msel{position:relative;display:inline-block}
+  .msel-btn{padding:5px 10px}
+  .msel-panel{display:none;position:absolute;top:110%;left:0;z-index:50;background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;padding:8px;width:300px;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+  .msel.open .msel-panel{display:block}
+  .msel-search{width:100%;margin-bottom:6px}
+  .msel-acts{display:flex;gap:6px;margin-bottom:6px}
+  .msel-acts button{padding:1px 8px;font-size:12px}
+  .msel-list{max-height:280px;overflow:auto;font-size:13px}
+  .msel-list label{display:block;padding:2px 4px;white-space:nowrap;cursor:pointer;border-radius:4px}
+  .msel-list label:hover{background:#2a323c}
+  .msel-list .cnt{color:var(--dim);font-size:11px;margin-left:4px}
+  /* 人工校对 */
+  tr.edited{box-shadow:inset 3px 0 0 #b98cff}
+  tr.edited.selt{box-shadow:inset 3px 0 0 #b98cff}
+  td.human{min-width:120px;max-width:230px;font-size:12px}
+  .btn-edit{padding:1px 7px;font-size:12px;border-radius:4px;color:#b98cff;border-color:#4a3a6e}
+  .human .hv{font-family:var(--mono);font-size:11px;color:#b98cff}
+  .human .hn{color:var(--dim);font-size:11px}
+  #editor{position:fixed;z-index:100;background:var(--panel2);border:1px solid #4a3a6e;border-radius:10px;
+    padding:10px 12px;width:380px;box-shadow:0 10px 30px rgba(0,0,0,.6);display:none}
+  .ed-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;color:var(--fg)}
+  .ed-head .mono{font-family:var(--mono);font-size:12px;color:var(--dim);flex:1}
+  .ed-head button{padding:0 6px;font-size:12px}
+  .ed-row{display:flex;gap:6px;align-items:center;margin-bottom:7px}
+  .ed-label{width:34px;color:var(--dim);font-size:13px;flex:none}
+  #edStatus{flex:1}
+  /* 候选下拉（替代原生 datalist：选中后仍可 ↑↓ 切换） */
+  .ac-wrap{position:relative;flex:1;display:flex;min-width:0}
+  .ac-wrap input{width:100%;min-width:0}
+  .ac-list{position:absolute;top:100%;left:0;z-index:120;background:var(--panel2);border:1px solid #4a3a6e;
+    border-radius:6px;max-height:220px;overflow:auto;min-width:100%;width:max-content;
+    box-shadow:0 8px 24px rgba(0,0,0,.55);display:none;margin-top:2px}
+  .ac-list.open{display:block}
+  .ac-item{padding:4px 12px;font-family:var(--mono);font-size:12px;cursor:pointer;white-space:nowrap;color:var(--fg)}
+  .ac-item.active{background:#332a4d;color:#fff}
+  .ac-item:not(.active):hover{background:#2a323c}
+  /* 滚动不穿透：弹层内滚轮不带动背后的表格 */
+  .ac-list, .msel-list, .msel-panel, #editor{overscroll-behavior:contain}
+</style>
+</head>
+<body>
+<header>
+  <h1>match_result 人工校对 · 语音试听 <small>talk/&lt;EVO游戏1|2|3&gt;/&lt;名去V&gt;.ogg · talk/&lt;Remake游戏101|102&gt;/&lt;名&gt;.opus · 单 audio 元素，一次仅一条，不预取不缓存</small></h1>
+
+  <div class="row">
+    <input type="file" id="csvFile" accept=".csv,.txt">
+    <button id="loadDefault">加载默认 CSV（需本目录起 HTTP 服务）</button>
+    <span id="loadInfo">尚未加载 · 目标：../data/match_result_sc_detailed_corrected.csv</span>
+  </div>
+
+  <div class="row">
+    <input type="text" id="quickName" placeholder="快速试听：EVO 名/10位ID 或 Remake 名（v…自动走 opus）">
+    <button class="primary" id="quickPlay">播放</button>
+    <select id="evoGame" title="EVO 语音的游戏 ID">
+      <option value="1">EVO 1 · FC</option>
+      <option value="2" selected>EVO 2 · SC</option>
+      <option value="3">EVO 3 · 3rd</option>
+    </select>
+    <select id="remakeGame" title="Remake 语音的游戏 ID">
+      <option value="101">Remake 101 · FC</option>
+      <option value="102" selected>Remake 102 · SC Demo</option>
+    </select>
+    <label class="chk">EVO音量 <input type="range" id="volE" min="0" max="1" step="0.02" value="0.32" style="width:80px"></label>
+    <label class="chk">Remake音量 <input type="range" id="volR" min="0" max="1" step="0.02" value="0.75" style="width:80px"></label>
+    <label class="chk" title="Remake 语音先查本地拆包，没有再走在线 CDN"><input type="checkbox" id="useLocal" checked>本地语音优先</label>
+    <button id="pickVoiceDir" title="用浏览器目录选择框指定本地语音文件夹（无需服务器配置，Chromium 系浏览器支持）">📁 指定语音目录…</button>
+    <span class="hint" id="voiceDirInfo"></span>
+  </div>
+
+  <div class="row">
+    <span id="msFilters" style="display:flex;gap:8px;flex-wrap:wrap"></span>
+    <select id="fVoice">
+      <option value="">有/无语音都显示</option>
+      <option value="hasE">EVO 语音：有</option>
+      <option value="noneE">EVO 语音：无</option>
+      <option value="hasR">Remake 语音：有</option>
+      <option value="noneR">Remake 语音：无</option>
+      <option value="both">两侧都有</option>
+    </select>
+    <select id="fHuman">
+      <option value="">人工状态：全部</option>
+      <option value="none">仅未校对</option>
+      <option value="done">仅已校对</option>
+      <option value="confirm">· 确认</option>
+      <option value="change">· 改配</option>
+      <option value="novoice">· 无语音</option>
+      <option value="suspect">· 存疑</option>
+    </select>
+    <input type="text" id="fSearch" placeholder="搜索：原文 / 译文 / 文件名 / 注释…">
+    <label class="chk"><input type="checkbox" id="fAlert">仅看有告警(Speaker/Reuse)</label>
+    <button id="reset">重置</button>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div class="row" id="stats"></div>
+  <div class="row" id="selBar">
+    <button id="selAllBtn" title="选中当前筛选结果的全部行">全选(筛选)</button>
+    <button id="selInvBtn" title="在当前筛选结果范围内反转选中状态">反选(筛选)</button>
+    <button id="selNoneBtn">清空选择</button>
+    <span class="hint" id="selCount">已选 0 行</span>
+    <button id="selExport" class="primary" title="导出勾选的行（未勾选则导出全部）；人工裁定的行 MatchType→manual(类型) 并附 ManualStatus/Voice/Note 列">导出CSV(含人工)</button>
+    <span class="chip-sep">|</span>
+    <span class="hint" id="edCount">人工 0 行</span>
+    <button id="edImport" title="导入 manual_verdicts_*.jsonl 继续之前的校对">导入jsonl</button>
+    <button id="edExport" class="primary" title="把人工校对结果导出为 manual_verdicts_&lt;N&gt;.jsonl（可直接用于 patch match result）">导出manual_verdicts</button>
+    <button id="edClear" title="清空全部人工校对记录（含浏览器本地保存）">清空人工</button>
+    <input type="file" id="edFile" accept=".jsonl,.json" style="display:none">
+    <span class="hint">勾选支持 Shift 点选范围 · 表头 ☐ 只作用于当前页</span>
+  </div>
+
+  <div class="row">
+    <audio id="player" controls preload="none"></audio>
+    <button id="stopBtn" title="停止并释放资源">⏹ 停止</button>
+    <span id="nowPlaying"></span>
+    <span class="hint">←/→：上/下一条可播放行 · Enter：当前行 R/E 切换重听 · 点击注释展开 · 播不出的文件名会标红</span>
+  </div>
+</header>
+
+<main>
+  <div class="drop" id="drop">
+    拖放 <b>match_result_sc_detailed_corrected.csv</b> 到此处，或使用上方按钮选择文件。<br>
+    列按表头自动识别，兼容各版本 match_result CSV；Annotation 结构化解析（含“候选:”段）。
+  </div>
+  <div id="tableWrap" style="display:none">
+    <table id="tbl">
+      <thead><tr id="thead"></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="pager" id="pager"></div>
+  </div>
+
+  <div id="editor" style="display:none">
+    <div class="ed-head">
+      <b>人工校对</b> <span id="edRowId" class="mono"></span>
+      <button id="edClose" title="关闭 (Esc)">✕</button>
+    </div>
+    <div class="ed-row">
+      <span class="ed-label">状态</span>
+      <select id="edStatus" title="随语音自动联动：改动→改配，改回原配→确认，清空→无语音；存疑需手动选择">
+        <option value="confirm">确认匹配（现状正确）</option>
+        <option value="change">改配（换语音）</option>
+        <option value="novoice">无语音（应清除）</option>
+        <option value="suspect">存疑（待定）</option>
+      </select>
+      <span class="hint" id="edAutoHint" style="color:#6ea8ff"></span>
+    </div>
+    <div class="ed-row">
+      <span class="ed-label">语音</span>
+      <div class="ac-wrap">
+        <input type="text" id="edVoice" placeholder="ch0010470181V / 10位ID，无语音留空" autocomplete="off">
+        <div id="edVoiceList" class="ac-list"></div>
+      </div>
+    </div>
+    <div class="ed-row">
+      <span class="ed-label">备注</span>
+      <input type="text" id="edNote" placeholder="可选" style="flex:1">
+    </div>
+    <div class="ed-row" style="justify-content:flex-end">
+      <button id="edPlay" title="试听输入框里的语音">▶试听</button>
+      <button id="edDel" title="删除这行的人工记录">删除记录</button>
+      <button id="edSave" class="primary">保存</button>
+    </div>
+  </div>
+</main>
+
+<script>
+"use strict";
+const CDN = "https://trailsinthedatabase.com/talk";
+const PAGE = 100;
+const DEFAULT_CSV = "../data/match_result_sc_detailed_corrected.csv";   // 页面位于 review_agent/ 时
+// 人工复核优先级：从高到低
+const VERDICT_ORDER = ["WRONG", "SUSPECT", "CANDIDATES", "UNRESOLVED", "FOUND", "NO_VOICE", "OK"];
+const VERDICT_STYLE = {
+  WRONG:"bad", SUSPECT:"bad", CANDIDATES:"warn", UNRESOLVED:"warn",
+  FOUND:"blue", NO_VOICE:"gray", OK:"ok-dim",
+};
+
+const $ = s => document.querySelector(s);
+const player = $("#player");
+let rows = [], cols = {}, filtered = [];
+let rowsById = new Map();
+let headerOrder = [];
+const selectedKeys = new Set();
+let lastSelGi = -1;
+let page = 1, sortKey = null, sortDir = 1;
+let playingIdx = -1, missingSet = new Set();   // key: "<gameId>/<name>.<ext>"
+const expandedAnnos = new Set();
+let currentIsRemake = false;
+
+function rowKey(r){ return (cols.id && r[cols.id]) || ("i" + r.__idx); }
+
+/* ---------- 人工校对记录（localStorage 持久化，翻页/筛选不丢失） ---------- */
+const LS_KEY = "mvc_edits_v1";
+const edits = new Map();       // RemakeVoiceID -> {status, voice, note, ts}
+function persistEdits(){ try{ localStorage.setItem(LS_KEY, JSON.stringify([...edits])); }catch(e){} }
+function loadEdits(){
+  try{
+    const s = localStorage.getItem(LS_KEY);
+    if(s) for(const [k, v] of JSON.parse(s)) edits.set(String(k), v);
+  }catch(e){}
+}
+loadEdits();
+const ED_STATUS_LABEL = { confirm:["确认","ok-dim"], change:["改配","blue"], novoice:["无语音","gray"], suspect:["存疑","warn"] };
+function updateEdCount(){ $("#edCount").textContent = `人工 ${edits.size} 行`; }
+function normalizeVoice(s){
+  let v = String(s || "").trim().replace(/\.(ogg|opus|wav)$/i, "");
+  if(/^\d{10}$/.test(v)) return "ch" + v + "V";
+  if(/^ch\d{10}$/i.test(v)) return v + "V";
+  return v;   // ch...V / v... 原样
+}
+
+$("#volE").addEventListener("input", e => { if(!currentIsRemake) player.volume = +e.target.value; });
+$("#volR").addEventListener("input", e => { if(currentIsRemake) player.volume = +e.target.value; });
+
+/* 表头冻结在工具区下方：工具区高度可变（窗口宽度变化导致换行），用 ResizeObserver 跟随 */
+(function(){
+  const hdr = document.querySelector("header");
+  const sync = () => document.documentElement.style.setProperty("--hdr-h", hdr.offsetHeight + "px");
+  new ResizeObserver(sync).observe(hdr);
+  window.addEventListener("resize", sync);
+  sync();
+})();
+
+/* ---------- CSV 解析（支持引号、逗号、内嵌换行、BOM） ---------- */
+function parseCSV(text){
+  text = text.replace(/^\uFEFF/, "");
+  const out = []; let row = [], cell = "", q = false;
+  for(let i = 0; i < text.length; i++){
+    const c = text[i];
+    if(q){
+      if(c === '"'){ if(text[i+1] === '"'){ cell += '"'; i++; } else q = false; }
+      else cell += c;
+    }else{
+      if(c === '"') q = true;
+      else if(c === ','){ row.push(cell); cell = ""; }
+      else if(c === '\n'){ row.push(cell); out.push(row); row = []; cell = ""; }
+      else if(c === '\r'){ /* skip */ }
+      else cell += c;
+    }
+  }
+  if(cell !== "" || row.length){ row.push(cell); out.push(row); }
+  return out;
+}
+
+/* ---------- Annotation 结构化解析（全部本地） ----------
+  结构匹配:唯一(script) Loc_123; 自动校对[OK] submitmap: 说明
+  结构匹配多候选:0010470143|0010470181; 自动校对[WRONG] …正确应为 0010470181…
+  结构匹配:无候选 Loc_470; 自动校对[CANDIDATES] 说明; 候选: 0070350658 C0101/Function_10『……』 | …
+-------------------------------------------------------------------- */
+function parseAnno(a){
+  if(!a) return null;
+  const res = { way: "", mods: [], cands: [], candList: [], verdict: null, method: "", desc: "", ids: [] };
+  const i = a.search(/[;；]/);
+  const head = i >= 0 ? a.slice(0, i) : a;
+  let tail = i >= 0 ? a.slice(i + 1) : "";
+  let m;
+  if((m = head.match(/^结构匹配多候选[:：]\s*(.+)$/))){
+    res.way = "多候选";
+    res.cands = m[1].split(/[|｜]/).map(s => s.trim()).filter(Boolean);
+  }else if((m = head.match(/^结构匹配[:：]唯一(?:[（(]([^）)]*)[）)])?/))){
+    res.way = "唯一";
+    res.mods = (m[1] || "").split(/[|｜]/).map(s => s.trim()).filter(Boolean);
+  }else if(head.includes("无候选")){
+    res.way = "无候选";
+  }else{
+    res.way = head.trim();
+  }
+  // 拆出 “; 候选: …” 段（结构化候选，含位置与文本）
+  if((m = tail.match(/[;；]\s*候选[:：]\s*(.+)$/))){
+    res.candList = m[1].split(/\s*\|\s*/).map(item => {
+      const mm = item.match(/^\s*(\d{10})\s*(.*)$/);
+      return mm ? { id: mm[1], info: mm[2].trim() } : { id: item.trim(), info: "" };
+    }).filter(c => c.id);
+    tail = tail.slice(0, m.index);
+  }
+  if((m = tail.match(/自动校对\[([^\]]+)\]/))){
+    res.verdict = m[1].trim();
+    tail = tail.slice(m.index + m[0].length).trim();
+  }else{
+    tail = tail.trim();
+  }
+  if((m = tail.match(/^([^:：,，。;；]{1,24})[:：]/))){
+    res.method = m[1].trim();
+    tail = tail.slice(m[0].length).trim();
+  }
+  res.desc = tail;
+  // 描述里提及的 10 位语音 ID（如 WRONG 的“正确应为 XXXXXXXXXX”）
+  const ids = new Set(res.cands);
+  for(const mm of res.desc.matchAll(/(?:^|\D)(\d{10})(?=\D|$)/g)) ids.add(mm[1]);
+  res.ids = [...ids];
+  return res;
+}
+
+/* ---------- 列识别 ---------- */
+function detectCols(header){
+  const find = (...cands) => {
+    for(const c of cands){
+      const hit = header.find(h => h.toLowerCase().trim() === c);
+      if(hit) return hit;
+    }
+    for(const c of cands){
+      const hit = header.find(h => h.toLowerCase().includes(c));
+      if(hit) return hit;
+    }
+    return null;
+  };
+  return {
+    id:    find("remakevoiceid"),
+    voice: find("oldvoicefilename", "voicefilename"),
+    rvfn:  find("remakevoicefilename"),
+    script:find("remakescenascriptfilename", "scenascriptfilename"),
+    func:  find("remakefunction"),
+    block: find("remakeblock"),
+    cn:    find("remakevoicetranslation"),
+    jp:    find("remakevoicetext"),
+    oldjp: find("oldvoicetext"),
+    mtype: find("matchtype"),
+    spk:   find("speakercheck"),
+    reuse: find("voicereusealert"),
+    anno:  find("annotation"),
+    evo:   find("evoscene"),
+    line:  find("remakescenascriptlineno"),
+  };
+}
+
+/* ---------- 加载 ---------- */
+function loadCSV(text, name){
+  const table = parseCSV(text);
+  if(table.length < 2){ $("#loadInfo").textContent = "CSV 为空或只有表头"; return; }
+  cols = detectCols(table[0]);
+  headerOrder = table[0];
+  rows = table.slice(1).filter(r => r.length > 1).map((r, n) => {
+    const o = { __idx: n }; table[0].forEach((h, i) => o[h] = (r[i] ?? "").trim());
+    if(cols.anno) o.__anno = parseAnno(o[cols.anno]);
+    return o;
+  });
+  missingSet.clear();
+  rowsById = new Map(rows.map(r => [rowKey(r), r]));
+  updateEdCount();
+  const nv = rows.filter(r => r.__anno && r.__anno.verdict).length;
+  $("#loadInfo").textContent = cols.voice
+    ? `✓ ${name} · ${rows.length} 行 · 含自动校对判定 ${nv} 行`
+    : `⚠ ${name} · ${rows.length} 行 · 未找到 OldVoiceFilename 列，无法试听`;
+  buildFilterOptions();
+  applyFilter();
+  $("#drop").style.display = "none";
+  $("#tableWrap").style.display = "";
+}
+
+function readFile(f){
+  const rd = new FileReader();
+  rd.onload = () => loadCSV(rd.result, f.name);
+  rd.readAsText(f, "utf-8");
+}
+$("#csvFile").addEventListener("change", e => { const f = e.target.files[0]; if(f) readFile(f); });
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if(f) readFile(f); });
+$("#loadDefault").addEventListener("click", async () => {
+  try{
+    const res = await fetch(DEFAULT_CSV, { cache: "no-store" });
+    if(!res.ok) throw new Error(res.status);
+    loadCSV(await res.text(), DEFAULT_CSV);
+  }catch(err){
+    $("#loadInfo").textContent = `无法 fetch ${DEFAULT_CSV}（${err.message}）。请直接用文件选择/拖放（file:// 打开时 fetch 不可用）。`;
+  }
+});
+
+/* ---------- 过滤器：多选（勾选弹层，可搜索） ---------- */
+const MSEL_DEFS = [
+  { id:"script",  label:"脚本",   get: r => (cols.script ? (r[cols.script] || "").toLowerCase() : "") },
+  { id:"verdict", label:"校对判定", get: r => r.__anno?.verdict || "", order: VERDICT_ORDER },
+  { id:"type",    label:"匹配类型", get: r => r[cols.mtype] || "" },
+  { id:"spk",     label:"说话人检查", get: r => r[cols.spk] || "" },
+];
+const msel = {};   // id -> { def, values:[], counts:{}, set:Set(包含集，空=全部) }
+
+function buildFilterOptions(){
+  MSEL_DEFS.forEach(def => {
+    const counts = {};
+    rows.forEach(r => { const v = def.get(r); counts[v] = (counts[v] || 0) + 1; });
+    let values = Object.keys(counts).filter(v => v !== "");
+    if(def.order){
+      values.sort((a, b) => (def.order.indexOf(a) + 99 * !def.order.includes(a)) - (def.order.indexOf(b) + 99 * !def.order.includes(b)));
+    }else{
+      values.sort((a, b) => counts[b] - counts[a] || a.localeCompare(b, "ja"));
+    }
+    const prev = msel[def.id];
+    msel[def.id] = { def, values, counts, set: prev ? prev.set : new Set() };
+  });
+  renderMSelDOM();
+}
+
+function mselEff(d){   // 有效选中集（空包含集 = 全部；哨兵 = 空）
+  if(d.set.has("\u0000∅")) return new Set();
+  return d.set.size ? d.set : new Set([...d.values, ...(d.counts[""] ? [""] : [])]);
+}
+
+function renderMSelDOM(){
+  const NONE = "\u0000∅";
+  const box = $("#msFilters");
+  box.innerHTML = MSEL_DEFS.map(def => {
+    const d = msel[def.id];
+    const n = d.set.has(NONE) ? 0 : d.set.size;
+    const total = d.values.length + (d.counts[""] ? 1 : 0);
+    const label = !d.set.has(NONE) && n === 0 ? "全部" : n >= total ? "无" : `${n} 项`;
+    const items = [
+      ...(d.counts[""] ? [`<label><input type="checkbox" value="">（无）<span class="cnt">${d.counts[""]}</span></label>`] : []),
+      ...d.values.map(v => `<label><input type="checkbox" value="${escapeHtml(v)}" ${mselEff(d).has(v) ? "checked" : ""}>${escapeHtml(v)}<span class="cnt">${d.counts[v]}</span></label>`),
+    ].join("");
+    return `<div class="msel" data-ms="${def.id}">
+      <button class="msel-btn">${def.label}：${label} ▾</button>
+      <div class="msel-panel">
+        <input type="text" class="msel-search" placeholder="搜索${def.label}…">
+        <div class="msel-acts"><button class="msel-all">全选</button><button class="msel-none">全不选</button></div>
+        <div class="msel-list">${items}</div>
+      </div>
+    </div>`;
+  }).join("");
+
+  box.querySelectorAll(".msel").forEach(el => {
+    const d = msel[el.dataset.ms];
+    el.querySelector(".msel-btn").onclick = e => {
+      e.stopPropagation();
+      const was = el.classList.contains("open");
+      box.querySelectorAll(".msel").forEach(x => x.classList.remove("open"));
+      if(!was) el.classList.add("open");
+    };
+    el.querySelector(".msel-search").oninput = e => {
+      const q = e.target.value.trim().toLowerCase();
+      el.querySelectorAll(".msel-list label").forEach(lb => {
+        lb.style.display = !q || lb.textContent.toLowerCase().includes(q) ? "" : "none";
+      });
+    };
+    el.querySelector(".msel-all").onclick = () => { d.set.clear(); syncMSel(el, d); };
+    el.querySelector(".msel-none").onclick = () => {
+      d.set = new Set(["\u0000∅"]);   // 哨兵：什么都不选（0 行）
+      syncMSel(el, d);
+    };
+    el.querySelector(".msel-list").addEventListener("change", e => {
+      const cb = e.target;
+      const eff = mselEff(d);
+      eff.has(cb.value) ? eff.delete(cb.value) : eff.add(cb.value);
+      d.set = eff;                     // “（无）”项以空串作为集合成员
+      syncMSel(el, d);
+    });
+  });
+}
+
+function syncMSel(el, d){
+  // 更新勾选态与按钮文案，然后重新过滤
+  const NONE = "\u0000∅";
+  el.querySelectorAll(".msel-list input").forEach(cb => cb.checked = d.set.has(NONE) ? false : mselEff(d).has(cb.value));
+  const n = d.set.has(NONE) ? 0 : d.set.size;
+  const total = d.values.length + (d.counts[""] ? 1 : 0);
+  el.querySelector(".msel-btn").textContent = `${d.def.label}：${n === 0 && !d.set.has(NONE) ? "全部" : n === 0 ? "无" : n >= total ? "无" : n + " 项"} ▾`;
+  applyFilter();
+}
+
+// 点弹层外部关闭
+document.addEventListener("click", e => {
+  if(!e.target.closest(".msel"))
+    document.querySelectorAll(".msel.open").forEach(x => x.classList.remove("open"));
+});
+
+function mselPass(id, v){
+  const d = msel[id];
+  return !d || !d.set.size || d.set.has(v ?? "");
+}
+
+function hasAlert(r){
+  return (cols.spk && r[cols.spk]) || (cols.reuse && r[cols.reuse]);
+}
+
+function applyFilter(){
+  const voice = $("#fVoice").value;
+  const alertOnly = $("#fAlert").checked;
+  const q = $("#fSearch").value.trim().toLowerCase();
+  filtered = rows.filter(r => {
+    if(!mselPass("script", cols.script ? (r[cols.script] || "").toLowerCase() : "")) return false;
+    if(!mselPass("verdict", r.__anno?.verdict || "")) return false;
+    if(!mselPass("type", r[cols.mtype] || "")) return false;
+    if(!mselPass("spk", r[cols.spk] || "")) return false;
+    const vf = cols.voice ? (r[cols.voice] || "") : "";
+    const rvf = cols.rvfn ? (r[cols.rvfn] || "") : "";
+    if(voice === "hasE" && !vf) return false;
+    if(voice === "noneE" && vf) return false;
+    if(voice === "hasR" && !rvf) return false;
+    if(voice === "noneR" && rvf) return false;
+    if(voice === "both" && (!vf || !rvf)) return false;
+    if(alertOnly && !hasAlert(r)) return false;
+    const hu = $("#fHuman").value;
+    if(hu === "none" && edits.has(rowKey(r))) return false;
+    if(hu === "done" && !edits.has(rowKey(r))) return false;
+    if((hu === "confirm" || hu === "change" || hu === "novoice" || hu === "suspect") &&
+       (edits.get(rowKey(r)) || {}).status !== hu) return false;
+    if(q){
+      const hay = [vf, r[cols.jp], r[cols.cn], r[cols.oldjp], r[cols.anno], r[cols.func], r[cols.block],
+                   r[cols.rvfn], r[cols.evo], r[cols.id], r[cols.line]].filter(Boolean).join(" ").toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  if(sortKey){
+    filtered.sort((a, b) => {
+      const x = a[sortKey] ?? "", y = b[sortKey] ?? "";
+      const cmp = (x === "" || y === "" || isNaN(x) || isNaN(y))
+        ? String(x).localeCompare(String(y), "ja") : Number(x) - Number(y);
+      return cmp * sortDir;
+    });
+  }
+  page = 1;
+  lastSelGi = -1;
+  render();
+}
+
+/* ---------- 渲染 ---------- */
+function escapeHtml(s){
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function typeTag(v){
+  const s = String(v || "").toLowerCase();
+  if(s === "matched") return `<span class="tag matched">matched</span>`;
+  if(s === "multi")   return `<span class="tag multi">multi</span>`;
+  if(s === "voiceonly") return `<span class="tag voiceonly">voiceonly</span>`;
+  if(s.includes("unmatched") || s.includes("无候选")) return `<span class="tag unmatched">${escapeHtml(v)}</span>`;
+  return v ? `<span class="tag warn">${escapeHtml(v)}</span>` : "—";
+}
+function spkTag(v){
+  if(!v) return "—";
+  return /不对应|mismatch|bad|未映射|不符/i.test(v)
+    ? `<span class="tag bad">${escapeHtml(v)}</span>`
+    : `<span class="tag warn">${escapeHtml(v)}</span>`;
+}
+function candButtons(list){
+  // 结构化候选：ID + 位置『文本』
+  const items = list.map(c => {
+    const loc = (c.info || "").split(/『/)[0].trim();
+    const txt = (c.info.match(/『(.*)』?/) || [])[1] || "";
+    const label = `${c.id} ${loc}${txt ? "『" + (txt.length > 10 ? txt.slice(0, 10) + "…" : txt) + "』" : ""}`;
+    return `<button class="btn-cand" data-play="${escapeHtml(c.id)}" data-gi="-1" title="试听 ch${escapeHtml(c.id)}.ogg — ${escapeHtml(c.info)}">▶${escapeHtml(label)}</button>`;
+  }).join("");
+  return `<span class="cands">${items}</span>`;
+}
+function idButtons(ids){
+  return `<span class="cands">` + ids.map(id =>
+    `<button class="btn-cand" data-play="${escapeHtml(id)}" data-gi="-1" title="试听 ch${escapeHtml(id)}.ogg">▶${escapeHtml(id)}</button>`
+  ).join("") + `</span>`;
+}
+function annoCell(r){
+  const a = r.__anno;
+  let html = "";
+  if(cols.reuse && r[cols.reuse]) html += `<span class="reuse">⚠复用</span> `;
+  if(!a) return `<td class="anno">${html || "—"}</td>`;
+  if(a.verdict) html += `<span class="tag ${VERDICT_STYLE[a.verdict] || "gray"}">${escapeHtml(a.verdict)}</span> `;
+  if(a.method)  html += `<span class="tag method">${escapeHtml(a.method)}</span> `;
+  const key = r[cols.id] || "";
+  const open = expandedAnnos.has(key);
+  if(a.candList.length) html += candButtons(a.candList);
+  else if(a.ids.length) html += idButtons(a.ids);
+  if(a.desc) html += `<span class="desc${open ? " open" : ""}" data-anno-key="${escapeHtml(key)}" title="点击展开/收起">${escapeHtml(a.desc)}</span>`;
+  return `<td class="anno">${html || "—"}</td>`;
+}
+
+function selCell(r, gi){
+  const k = rowKey(r);
+  return `<td class="sel"><input type="checkbox" data-selkey="${escapeHtml(k)}" data-gi="${gi}" ${selectedKeys.has(k) ? "checked" : ""}></td>`;
+}
+
+function humanCell(r, gi){
+  const k = rowKey(r);
+  const e = edits.get(k);
+  const btn = `<button class="btn-edit" data-edit="${escapeHtml(k)}" data-gi="${gi}" title="人工校对本行">✎</button>`;
+  if(!e) return `<td class="human">${btn}</td>`;
+  const [label, cls] = ED_STATUS_LABEL[e.status] || [e.status, "gray"];
+  return `<td class="human">${btn} <span class="tag ${cls}">${escapeHtml(label)}</span>` +
+    (e.voice ? `<div class="hv">${escapeHtml(e.voice)}</div>` : "") +
+    (e.note ? `<div class="hn">${escapeHtml(e.note)}</div>` : "") + `</td>`;
+}
+
+function render(){
+  // 统计 + chips（自动校对判定按复核优先级排，后接匹配类型与告警）
+  const vc = {}; rows.forEach(r => { const v = r.__anno?.verdict; if(v) vc[v] = (vc[v] || 0) + 1; });
+  const mt = {}; rows.forEach(r => { const v = r[cols.mtype] || ""; mt[v] = (mt[v] || 0) + 1; });
+  const nAlert = rows.filter(hasAlert).length;
+  $("#stats").innerHTML = `共 <b>${rows.length}</b> 行 · 筛选后 <b>${filtered.length}</b> 行`;
+  const verdictChips = Object.entries(vc).sort((a, b) =>
+      (VERDICT_ORDER.indexOf(a[0]) + 99 * !VERDICT_ORDER.includes(a[0])) - (VERDICT_ORDER.indexOf(b[0]) + 99 * !VERDICT_ORDER.includes(b[0])))
+    .map(([k, v]) => `<span class="chip" data-verdict="${escapeHtml(k)}">${escapeHtml(k)} <b>${v}</b></span>`);
+  const typeChips = Object.entries(mt).filter(([k]) => k).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<span class="chip" data-type="${escapeHtml(k)}">${escapeHtml(k)} <b>${v}</b></span>`);
+  $("#chips").innerHTML = verdictChips.join("") + `<span class="chip-sep">|</span>` + typeChips.join("") +
+    `<span class="chip-sep">|</span><span class="chip" data-alert="1">有告警 <b>${nAlert}</b></span>`;
+  $("#chips").querySelectorAll(".chip").forEach(ch => {
+    ch.onclick = () => {
+      // chip = 单选该值（已是唯一选中则恢复全部）
+      if(ch.dataset.verdict || ch.dataset.type){
+        const id = ch.dataset.verdict ? "verdict" : "type";
+        const v = ch.dataset.verdict || ch.dataset.type;
+        const d = msel[id];
+        d.set = (d.set.size === 1 && d.set.has(v)) ? new Set() : new Set([v]);
+        renderMSelDOM();
+      }else{
+        $("#fAlert").checked = !$("#fAlert").checked;
+      }
+      applyFilter();
+    };
+  });
+
+  const defs = [
+    {key: "__sel", label: `<input type="checkbox" id="selAll" title="全选/取消当前页">`, cls: "sel"},
+    {key: cols.id,    label: "ID",   cls: "num", sortable: true},
+    {key: cols.script,label: "脚本", cls: "num"},
+    {key: cols.func,  label: "函数/块", cls: "num"},
+    {key: cols.jp,    label: "Remake 原文", cls: "jp"},
+    {key: cols.cn,    label: "Remake 译文", cls: "cn"},
+    {key: cols.oldjp, label: "EVO 原文", cls: "jp"},
+    {key: cols.voice, label: "语音 R/E", cls: "vf"},
+    {key: cols.mtype, label: "匹配", sortable: true},
+    {key: cols.spk,   label: "说话人"},
+    {key: null,       label: "注释 / 告警（判定·方法·候选）", cls: "anno"},
+    {key: "__human",  label: "人工校对", cls: "human"},
+  ];
+  $("#thead").innerHTML = defs.map(d =>
+    `<th data-key="${escapeHtml(d.key || "")}" class="${d.cls || ""}">${d.label}</th>`).join("");
+
+  const start = (page - 1) * PAGE;
+  const slice = filtered.slice(start, start + PAGE);
+  $("#tbody").innerHTML = slice.map((r, i) => {
+    const gi = start + i;
+    const ev = r[cols.voice] || "";
+    const rv = cols.rvfn ? (r[cols.rvfn] || "") : "";
+    const evBase = ev.replace(/V$/i, "");
+    // 网站 102 只收录 bank 00/01/fc，其余 bank 的 Remake 语音在线缺失（本地拆包可回退的会自动解除变暗）
+    const rvMissing = rv && !/^v\d+_(00|01|fc)_/i.test(rv) && !localOk.has(rv);
+    const voiceCell =
+      (rv ? `<button class="btn-play r${rvMissing ? " dim" : ""}" data-play="${escapeHtml(rv)}" data-gi="${gi}" title="播放 Remake ${escapeHtml(rv)}.opus${rvMissing ? "（bank≥02，站上大概率未收录）" : ""}">▶R</button> ` : "") +
+      (ev ? `<button class="btn-play e" data-play="${escapeHtml(ev)}" data-gi="${gi}" title="播放 EVO ${escapeHtml(ev)}（去V）">▶E</button> ` : "") +
+      (ev ? `<span class="${missingSet.has($("#evoGame").value + "/" + evBase + ".ogg") ? "miss" : ""}">${escapeHtml(ev)}</span>` : "") +
+      (rv ? `<span class="rv">${escapeHtml(rv)}</span>` : "") +
+      (!ev && !rv ? `<span class="hint">—</span>` : "");
+    const tds = defs.map(d => {
+      const v = d.key && d.key !== "__sel" && d.key !== "__human" ? (r[d.key] ?? "") : "";
+      if(d.key === "__sel")      return selCell(r, gi);
+      if(d.key === "__human")    return humanCell(r, gi);
+      if(d.key === null)          return annoCell(r);
+      if(d.key === cols.voice)    return `<td class="vf">${voiceCell}</td>`;
+      if(d.key === cols.mtype)    return `<td>${typeTag(v)}</td>`;
+      if(d.key === cols.spk)      return `<td>${spkTag(v)}</td>`;
+      if(d.key === cols.func)     return `<td class="num">${escapeHtml(v)}${r[cols.block] ? "<br>" + escapeHtml(r[cols.block]) : ""}</td>`;
+      if(d.key === cols.id)       return `<td class="num">${escapeHtml(v)}</td>`;
+      return `<td class="${d.cls || ""}">${escapeHtml(v)}</td>`;
+    }).join("");
+    return `<tr class="data${selectedKeys.has(rowKey(r)) ? " selt" : ""}${edits.has(rowKey(r)) ? " edited" : ""}" data-gi="${gi}">${tds}</tr>`;
+  }).join("") || `<tr><td colspan="${defs.length}" style="color:var(--dim)">无匹配行</td></tr>`;
+
+  // 表头 ☐ 状态（仅当前页）与选择计数
+  const pageSel = slice.filter(r => selectedKeys.has(rowKey(r))).length;
+  const selAllEl = document.querySelector("#selAll");
+  if(selAllEl){
+    selAllEl.checked = slice.length > 0 && pageSel === slice.length;
+    selAllEl.indeterminate = pageSel > 0 && pageSel < slice.length;
+  }
+  $("#selCount").textContent = `已选 ${selectedKeys.size} 行`;
+
+  // 分页
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE));
+  $("#pager").innerHTML = pages <= 1 ? "" :
+    `<button data-p="1">«</button><button data-p="${page - 1}">‹</button>
+     <span>${page} / ${pages}</span>
+     <button data-p="${page + 1}">›</button><button data-p="${pages}">»</button>
+     <input type="text" id="goto" style="width:60px" placeholder="页">`;
+  $("#pager").querySelectorAll("button").forEach(b => {
+    b.onclick = () => { page = Math.min(Math.max(1, +b.dataset.p), pages); render(); window.scrollTo({top: 0}); };
+  });
+  const goto = $("#goto");
+  if(goto) goto.onkeydown = e => { if(e.key === "Enter"){ page = Math.min(Math.max(1, +goto.value || 1), pages); render(); } };
+
+  $("#thead").querySelectorAll("th").forEach(th => {
+    th.onclick = e => {
+      if(e.target.tagName === "INPUT") return;
+      const k = th.dataset.key; if(!k || k === "__sel" || k === "__human") return;
+      if(sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = 1; }
+      applyFilter();
+    };
+  });
+}
+
+["fVoice","fAlert","fHuman"].forEach(id => $("#" + id).addEventListener("change", applyFilter));
+let searchTimer;
+$("#fSearch").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(applyFilter, 250); });
+$("#reset").addEventListener("click", () => {
+  MSEL_DEFS.forEach(def => msel[def.id] && msel[def.id].set.clear());
+  renderMSelDOM();
+  $("#fVoice").value = ""; $("#fAlert").checked = false; $("#fSearch").value = ""; $("#fHuman").value = "";
+  sortKey = null; expandedAnnos.clear();
+  applyFilter();
+});
+
+/* ---------- 多选 / 反选 / 导出 ---------- */
+$("#tbl").addEventListener("change", e => {
+  if(e.target.id !== "selAll") return;
+  const start = (page - 1) * PAGE;
+  const slice = filtered.slice(start, start + PAGE);
+  slice.forEach(r => e.target.checked ? selectedKeys.add(rowKey(r)) : selectedKeys.delete(rowKey(r)));
+  render();
+});
+$("#selAllBtn").addEventListener("click", () => {
+  filtered.forEach(r => selectedKeys.add(rowKey(r)));
+  render();
+});
+$("#selInvBtn").addEventListener("click", () => {
+  filtered.forEach(r => { const k = rowKey(r); selectedKeys.has(k) ? selectedKeys.delete(k) : selectedKeys.add(k); });
+  render();
+});
+$("#selNoneBtn").addEventListener("click", () => { selectedKeys.clear(); render(); });
+/* CSV 导出：人工裁定的行会把 MatchType 改为 manual(<status>)（suspect 保留原类型），
+   change 换 OldVoiceFilename、novoice 清空，并在行尾追加 ManualStatus/ManualVoice/ManualNote 三列；
+   没有勾选任何行时导出全部行。 */
+function csvRowWithManual(r){
+  const o = {};
+  headerOrder.forEach(h => o[h] = r[h] ?? "");
+  const e = edits.get(rowKey(r));
+  if(!e) return o;
+  if(e.status !== "suspect" && cols.mtype) o[cols.mtype] = `manual(${e.status})`;
+  if(e.status === "change" && cols.voice) o[cols.voice] = e.voice || "";
+  if(e.status === "novoice" && cols.voice) o[cols.voice] = "";
+  if(cols.anno){
+    const add = `人工校对[${e.status}]${e.voice ? " " + e.voice : ""}${e.note ? " " + e.note : ""}`;
+    o[cols.anno] = (o[cols.anno] ? o[cols.anno] + "; " : "") + add;
+  }
+  o.ManualStatus = e.status;
+  o.ManualVoice = e.voice || "";
+  o.ManualNote = e.note || "";
+  return o;
+}
+$("#selExport").addEventListener("click", () => {
+  const sel = selectedKeys.size ? rows.filter(r => selectedKeys.has(rowKey(r))) : rows;
+  if(!sel.length){ $("#selCount").textContent = "已选 0 行（没有可导出的行）"; return; }
+  const esc = v => { const s = String(v ?? ""); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const head = [...headerOrder, "ManualStatus", "ManualVoice", "ManualNote"];
+  const lines = [head.map(esc).join(",")];
+  sel.forEach(r => { const o = csvRowWithManual(r); lines.push(head.map(h => esc(o[h])).join(",")); });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv" }));
+  a.download = `match_result_selected_${sel.length}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+/* ---------- 播放：单个 <audio> 元素，一次一条，不预取不缓存 ----------
+   EVO:   talk/<evoGame>/<名去V>.ogg        （ch 前缀，CSV 里的 V 后缀需去除）
+   Remake: talk/<remakeGame>/<名>.opus      （v 开头，如 v009_00_0064）
+------------------------------------------------------------------ */
+function isRemakeName(n){ return /^v/i.test(n); }
+function voiceURL(name){
+  let n = String(name).trim().replace(/\.(ogg|opus)$/i, "");
+  if(isRemakeName(n)) return `${CDN}/${$("#remakeGame").value}/${encodeURIComponent(n)}.opus`;
+  n = n.replace(/V$/i, "");
+  if(/^\d{10}$/.test(n)) n = "ch" + n;   // 注释里的候选是裸 10 位 ID
+  return `${CDN}/${$("#evoGame").value}/${encodeURIComponent(n)}.ogg`;
+}
+function displayURLName(url){ return decodeURIComponent(url.replace(CDN + "/", "")); }
+
+/* ---------- 本地拆包语音（voice_check_server.py 的 /localvoice/）----------
+   G:\sc_demo_voice\voice\wav：bank 00/01 直配 + b 系列（b 系列与 bank 名可能非同一 take，播放时会标注）*/
+const LOCAL_VOICE = "/localvoice";
+const localResolve = new Map();   // Remake名 -> {url, exact} | null
+const localOk = new Set();
+
+/* ---------- 网页直接指定语音目录（File System Access API，免服务器配置） ----------
+   选择后枚举目录建立 索引；句柄存 IndexedDB，下次打开页面一键恢复授权。*/
+let voiceDir = null;              // FileSystemDirectoryHandle
+const voiceDirFiles = new Map();  // 名(去扩展名) -> 完整文件名
+const dirResolve = new Map();     // Remake名 -> {url, exact} | null（objectURL 缓存）
+let lastObjURL = null;
+
+function idb(){ return new Promise((res, rej) => {
+  const r = indexedDB.open("mvc_kv", 1);
+  r.onupgradeneeded = () => r.result.createObjectStore("kv");
+  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+});}
+async function idbSet(k, v){ const db = await idb(); return new Promise((res, rej) => {
+  const tx = db.transaction("kv", "readwrite"); tx.objectStore("kv").put(v, k);
+  tx.oncomplete = res; tx.onerror = () => rej(tx.error); });}
+async function idbGet(k){ const db = await idb(); return new Promise((res, rej) => {
+  const tx = db.transaction("kv", "readonly"); const q = tx.objectStore("kv").get(k);
+  q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });}
+
+async function indexVoiceDir(handle){
+  voiceDir = handle;
+  voiceDirFiles.clear(); dirResolve.clear();
+  for await (const [name, h] of handle.entries()){
+    if(h.kind === "file" && /\.(wav|ogg|opus)$/i.test(name))
+      voiceDirFiles.set(name.replace(/\.(wav|ogg|opus)$/i, "").toLowerCase(), name);
+  }
+  $("#voiceDirInfo").textContent = `📁 ${handle.name} · ${voiceDirFiles.size} 个音频`;
+}
+async function revokeObjURL(){ if(lastObjURL){ URL.revokeObjectURL(lastObjURL); lastObjURL = null; } }
+async function dirPlay(n){        // 目录里找：直配 → b 形式；返回 objectURL
+  let file = voiceDirFiles.get(n.toLowerCase());
+  let exact = true;
+  if(!file){
+    const m = n.split("_");
+    if(m.length === 3){
+      file = voiceDirFiles.get((m[0] + "_b" + m[2]).toLowerCase());
+      exact = false;
+    }
+  }
+  if(!file) return null;
+  const f = await voiceDir.getFileHandle(file).then(h => h.getFile());
+  await revokeObjURL();
+  lastObjURL = URL.createObjectURL(f);
+  return { url: lastObjURL, exact };
+}
+
+$("#pickVoiceDir").addEventListener("click", async () => {
+  if(!window.showDirectoryPicker){ $("#voiceDirInfo").textContent = "此浏览器不支持目录选择（需 Chrome/Edge）"; return; }
+  try{
+    const h = await window.showDirectoryPicker({ mode: "read", id: "mvc-voice" });
+    await indexVoiceDir(h);
+    await idbSet("voiceDir", h);
+  }catch(e){ /* 用户取消 */ }
+});
+
+// 页面加载时恢复上次的目录句柄（如已授权则自动生效，否则等一次点击授权）
+(async () => {
+  try{
+    const h = await idbGet("voiceDir");
+    if(!h) return;
+    const perm = await h.queryPermission({ mode: "read" });
+    if(perm === "granted"){ await indexVoiceDir(h); }
+    else{
+      $("#voiceDirInfo").textContent = "📁 已记住上次的语音目录，点“指定语音目录…”重新授权";
+      $("#pickVoiceDir").addEventListener("click", async () => {
+        if(voiceDir) return;
+        try{ if(await h.requestPermission({ mode: "read" }) === "granted") await indexVoiceDir(h); }catch(e){}
+      }, { once: true });
+    }
+  }catch(e){}
+})();
+
+async function probeLocal(name){
+  try{
+    const r = await fetch(`${LOCAL_VOICE}/${encodeURIComponent(name)}.wav`, { method: "HEAD" });
+    if(r.ok) return `${LOCAL_VOICE}/${encodeURIComponent(name)}.wav`;
+  }catch(e){}
+  return null;
+}
+async function resolveRemake(n){
+  if(voiceDir){                     // 网页指定的目录优先
+    const r = await dirPlay(n);
+    if(r){
+      if(!/^v\d+_(00|01|fc)_/i.test(n)){ localOk.add(n); render(); }
+      return { url: r.url, exact: r.exact, via: "dir" };
+    }
+  }
+  if(localResolve.has(n)) return localResolve.get(n);
+  let res = null;
+  let url = await probeLocal(n);
+  if(url) res = { url, exact: true, via: "server" };
+  else{
+    const m = n.split("_");
+    if(m.length === 3){
+      url = await probeLocal(`${m[0]}_b${m[2]}`);
+      if(url) res = { url, exact: false, via: "server" };
+    }
+  }
+  localResolve.set(n, res);
+  if(res && !/^v\d+_(00|01|fc)_/i.test(n)){ localOk.add(n); render(); }   // 在线缺失但本地有：解除变暗
+  return res;
+}
+
+async function play(name, gi){
+  if(!name) return;
+  player.pause();                    // 立即停掉当前一条
+  currentIsRemake = isRemakeName(name);
+  let url = "", tag = "";
+  if(currentIsRemake && $("#useLocal").checked){
+    const res = await resolveRemake(String(name).replace(/\.opus$/i, ""));
+    if(res){
+      url = res.url;
+      const base = res.via === "dir" ? "本地目录" : "本地";
+      tag = res.exact ? `（${base}）` : `（${base}·b形式，可能非同一take）`;
+    }
+  }
+  if(!url){ await revokeObjURL(); url = voiceURL(name); }   // 本地没有（或未启用）→ 在线；换 src 会中断上一条
+  player.src = url;
+  player.volume = +$(currentIsRemake ? "#volR" : "#volE").value;
+  player.play().catch(() => {});
+  playingIdx = gi;
+  $("#nowPlaying").innerHTML = `▶ <a href="${url}" target="_blank">${escapeHtml(displayURLName(url))}</a>` +
+    (tag ? ` <span style="color:var(--dim)">${tag}</span>` : "");
+  document.querySelectorAll("tr.playing").forEach(tr => tr.classList.remove("playing"));
+  if(gi >= 0){
+    const tr = document.querySelector(`tr[data-gi="${gi}"]`);
+    if(tr) tr.classList.add("playing");
+  }
+}
+
+function stopPlayback(){
+  player.pause();
+  player.removeAttribute("src");
+  player.load();                     // 释放网络请求与解码器
+  revokeObjURL();                    // 释放目录模式的 blob
+  playingIdx = -1;
+  $("#nowPlaying").textContent = "";
+  document.querySelectorAll("tr.playing").forEach(tr => tr.classList.remove("playing"));
+}
+$("#stopBtn").addEventListener("click", stopPlayback);
+
+player.addEventListener("error", () => {
+  const key = (player.src || "").replace(CDN + "/", "");
+  if(key){ missingSet.add(key); $("#nowPlaying").innerHTML = `✖ 文件缺失或无法播放：${escapeHtml(key)}`; render(); }
+});
+
+$("#tbody").addEventListener("click", e => {
+  const cb = e.target.closest("input[data-selkey]");
+  if(cb){                             // 行勾选（支持 Shift 范围），不触发播放
+    e.stopPropagation();
+    const gi = +cb.dataset.gi;
+    if(e.shiftKey && lastSelGi >= 0){
+      const a = Math.min(lastSelGi, gi), b = Math.max(lastSelGi, gi);
+      for(let x = a; x <= b; x++){
+        cb.checked ? selectedKeys.add(rowKey(filtered[x])) : selectedKeys.delete(rowKey(filtered[x]));
+      }
+    }else{
+      cb.checked ? selectedKeys.add(cb.dataset.selkey) : selectedKeys.delete(cb.dataset.selkey);
+      lastSelGi = gi;
+    }
+    render();
+    return;
+  }
+  const desc = e.target.closest(".desc");
+  if(desc){                          // 展开/收起注释
+    const k = desc.dataset.annoKey;
+    expandedAnnos.has(k) ? expandedAnnos.delete(k) : expandedAnnos.add(k);
+    desc.classList.toggle("open");
+    return;
+  }
+  const btn = e.target.closest("[data-play]");
+  if(btn){ e.stopPropagation(); play(btn.dataset.play, +btn.dataset.gi); return; }
+  const eb = e.target.closest(".btn-edit");
+  if(eb){ e.stopPropagation(); const rc = eb.getBoundingClientRect(); openEditor(eb.dataset.edit, rc.left, rc.bottom); return; }
+  if(e.target.closest("a")) return;
+  const tr = e.target.closest("tr.data");
+  if(tr && cols.voice){
+    const r = filtered[+tr.dataset.gi];
+    if(r && (r[cols.voice] || (cols.rvfn && r[cols.rvfn])))
+      play(r[cols.voice] || r[cols.rvfn], +tr.dataset.gi);
+  }
+});
+
+$("#quickPlay").addEventListener("click", () => {
+  const v = $("#quickName").value.trim().replace(/\.(ogg|opus)$/i, "");
+  if(v) play(v, -1);
+});
+$("#quickName").addEventListener("keydown", e => { if(e.key === "Enter") $("#quickPlay").click(); });
+["evoGame", "remakeGame"].forEach(id => $("#" + id).addEventListener("change", () => {
+  missingSet.clear();
+  player.pause(); player.removeAttribute("src"); player.load();
+  $("#nowPlaying").textContent = ""; render();
+}));
+
+/* ---------- 人工校对编辑器 ---------- */
+let editingKey = null;
+function openEditor(key, x, y){
+  editingKey = key;
+  const r = rowsById.get(key) || {};
+  const e = edits.get(key) || {};
+  $("#edRowId").textContent = key + (r[cols.jp] ? " · " + String(r[cols.jp]).slice(0, 16) : "");
+  $("#edStatus").value = e.status || "confirm";
+  $("#edVoice").value = e.voice || r[cols.voice] || "";
+  $("#edNote").value = e.note || "";
+  // 候选列表：当前匹配 + 注释候选（自动校对/多候选给出的提示）
+  const sug = [];
+  if(r[cols.voice]) sug.push(r[cols.voice]);
+  const a = r.__anno;
+  if(a){
+    a.candList.forEach(c => sug.push("ch" + c.id + "V"));
+    a.ids.forEach(id => sug.push("ch" + id + "V"));
+    a.cands.forEach(id => sug.push("ch" + id + "V"));
+  }
+  edSuggestItems = [...new Set(sug)];
+  const ed = $("#editor");
+  ed.style.display = "block";
+  ed.style.left = Math.max(8, Math.min(x, innerWidth - ed.offsetWidth - 8)) + "px";
+  ed.style.top = Math.max(8, Math.min(y + 6, innerHeight - ed.offsetHeight - 8)) + "px";
+  $("#edVoice").focus();
+}
+
+/* 候选下拉：↓ 展开显示全量候选（高亮当前值，不受输入值过滤——选中后仍可自由切换），
+   ↑↓ 在候选间切换并自动试听，Enter 确认，Esc 收起；手输时按子串过滤（行为不变） */
+let edSuggestItems = [];
+let acShown = [];          // 当前下拉里展示的候选集
+let acPlayTimer = null;
+function acShow(items, active){
+  acShown = items;
+  const list = $("#edVoiceList");
+  if(!items.length){ list.classList.remove("open"); list.innerHTML = ""; return; }
+  list.innerHTML = items.map((s, i) =>
+    `<div class="ac-item${i === active ? " active" : ""}" data-val="${escapeHtml(s)}">${escapeHtml(s)}</div>`).join("");
+  list.classList.add("open");
+  const act = list.children[active];
+  if(act) act.scrollIntoView({ block: "nearest" });
+}
+function acOpen(){         // 展开：全量候选，高亮当前值
+  acShow(edSuggestItems, edSuggestItems.indexOf($("#edVoice").value.trim()));
+}
+function acMove(step){
+  if(!acShown.length) return;
+  let i = acShown.indexOf($("#edVoice").value.trim());
+  if(i < 0) i = step > 0 ? -1 : acShown.length;      // 当前值不在候选里：从头/尾开始
+  i = Math.max(0, Math.min(acShown.length - 1, i + step));
+  $("#edVoice").value = acShown[i];
+  acShow(acShown, i);
+  syncStatusFromVoice();
+  clearTimeout(acPlayTimer);                        // 切换时自动试听（防抖）
+  acPlayTimer = setTimeout(() => play(acShown[i], -1), 250);
+}
+const acList = () => $("#edVoiceList");
+
+/* 状态随语音自动联动：语音≠原配→改配；改回原配→确认；清空→无语音（存疑仍可手动选，语音再变时重新联动） */
+let edAutoTimer = null;
+function syncStatusFromVoice(){
+  if(!editingKey) return;
+  const r = rowsById.get(editingKey) || {};
+  const prev = r[cols.voice] || "";
+  const cur = normalizeVoice($("#edVoice").value);
+  $("#edStatus").value = !cur ? "novoice" : (cur === prev ? "confirm" : "change");
+  const hint = $("#edAutoHint");
+  hint.textContent = "⚡已联动";
+  clearTimeout(edAutoTimer);
+  edAutoTimer = setTimeout(() => hint.textContent = "", 1200);
+}
+$("#edVoice").addEventListener("focus", acOpen);
+$("#edVoice").addEventListener("click", acOpen);
+$("#edVoice").addEventListener("input", () => {
+  const q = $("#edVoice").value.trim().toLowerCase();
+  acShow(!q ? edSuggestItems : edSuggestItems.filter(s => s.toLowerCase().includes(q)), -1);
+  syncStatusFromVoice();
+});
+$("#edVoice").addEventListener("blur", () => setTimeout(() => acList().classList.remove("open"), 150));
+$("#edVoice").addEventListener("keydown", e => {
+  const open = acList().classList.contains("open");
+  if(e.key === "ArrowDown" || e.key === "ArrowUp"){
+    e.preventDefault();
+    if(open) acMove(e.key === "ArrowDown" ? 1 : -1);
+    else acOpen();                                  // 首次 ↓ 展开，再按才移动
+  }else if(e.key === "Enter"){
+    if(open){ e.preventDefault(); acList().classList.remove("open"); }   // 先确认候选，再按 Enter 才保存
+    else $("#edSave").click();
+  }else if(e.key === "Escape"){
+    if(open){ e.preventDefault(); e.stopPropagation(); acList().classList.remove("open"); }
+  }
+});
+acList().addEventListener("mousedown", e => {
+  const it = e.target.closest(".ac-item"); if(!it) return;
+  e.preventDefault();                                // 不让 input 先失焦
+  $("#edVoice").value = it.dataset.val;
+  syncStatusFromVoice();
+  acList().classList.remove("open");
+});
+
+/* 滚轮规则：
+   - 候选下拉打开时：滚轮 = 切换候选（等同 ↑/↓，自动试听；累计阈值防触摸板连跳）
+   - 多选弹层/编辑器上：能滚则滚自己，滚不动就拦下，绝不穿透到表格 */
+let acWheelAcc = 0;
+document.addEventListener("wheel", e => {
+  if(e.deltaY && e.target.closest(".ac-list, .ac-wrap") && acList().classList.contains("open")){
+    e.preventDefault();
+    acWheelAcc += e.deltaY;
+    if(Math.abs(acWheelAcc) >= 60){
+      acMove(acWheelAcc > 0 ? 1 : -1);
+      acWheelAcc = 0;
+    }
+    return;
+  }
+  const el = e.target.closest(".ac-list, .msel-list, .msel-panel, #editor");
+  if(!el) return;
+  const canUp = el.scrollTop > 0;
+  const canDown = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+  if((e.deltaY < 0 && canUp) || (e.deltaY > 0 && canDown)) return;
+  e.preventDefault();
+}, { passive: false });
+$("#edClose").addEventListener("click", () => { $("#editor").style.display = "none"; editingKey = null; });
+document.addEventListener("keydown", e => { if(e.key === "Escape"){ $("#editor").style.display = "none"; editingKey = null; } });
+$("#edPlay").addEventListener("click", () => { const v = $("#edVoice").value.trim(); if(v) play(v, -1); });
+$("#edSave").addEventListener("click", () => {
+  if(!editingKey) return;
+  const status = $("#edStatus").value;
+  let voice = normalizeVoice($("#edVoice").value);
+  if(status === "change" && !voice){ $("#edVoice").focus(); return; }   // 改配必须有语音
+  if(status === "novoice") voice = "";
+  if(status === "confirm" && !voice) voice = (rowsById.get(editingKey) || {})[cols.voice] || "";
+  edits.set(editingKey, { status, voice, note: $("#edNote").value.trim(), ts: new Date().toISOString() });
+  persistEdits(); updateEdCount(); render();
+  $("#editor").style.display = "none"; editingKey = null;
+});
+$("#edDel").addEventListener("click", () => {
+  if(!editingKey) return;
+  edits.delete(editingKey);
+  persistEdits(); updateEdCount(); render();
+  $("#editor").style.display = "none"; editingKey = null;
+});
+
+/* ---------- verdicts.jsonl 导入 / 导出 ---------- */
+$("#edExport").addEventListener("click", () => {
+  if(!edits.size){ alert("还没有人工校对记录"); return; }
+  const lines = [...edits].map(([k, e]) => {
+    const r = rowsById.get(k) || {};
+    const m = (e.voice || "").match(/^ch(\d{10})V?$/i);
+    return JSON.stringify({
+      RemakeVoiceID: k,
+      status: e.status,                       // confirm | change | novoice | suspect
+      voice: e.voice || "",                   // 目标 EVO 文件名（ch…V）；novoice 为空串
+      voiceId: m ? m[1] : "",                 // 裸 10 位 ID，方便脚本用
+      prevVoice: r[cols.voice] || "",         // 导出时的原匹配
+      prevMatchType: r[cols.mtype] || "",
+      note: e.note || "",
+      ts: e.ts || "",
+    });
+  });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "application/jsonl" }));
+  a.download = `manual_verdicts_${edits.size}.jsonl`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+$("#edImport").addEventListener("click", () => $("#edFile").click());
+$("#edFile").addEventListener("change", e => {
+  const f = e.target.files[0]; if(!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    let n = 0, bad = 0;
+    for(const line of String(rd.result).split(/\r?\n/)){
+      const s = line.trim(); if(!s) continue;
+      try{
+        const o = JSON.parse(s);
+        if(o && o.RemakeVoiceID && ED_STATUS_LABEL[o.status]){
+          edits.set(String(o.RemakeVoiceID), { status: o.status, voice: o.voice || "", note: o.note || "", ts: o.ts || "" });
+          n++;
+        }else bad++;
+      }catch(err){ bad++; }
+    }
+    persistEdits(); updateEdCount(); render();
+    $("#edCount").textContent = `导入 ${n} 条${bad ? `，忽略 ${bad} 条` : ""} · 人工 ${edits.size} 行`;
+  };
+  rd.readAsText(f, "utf-8");
+  e.target.value = "";
+});
+$("#edClear").addEventListener("click", () => {
+  if(edits.size && confirm(`清空全部 ${edits.size} 条人工校对记录？（localStorage 也会删除）`)){
+    edits.clear(); persistEdits(); updateEdCount(); render();
+  }
+});
+
+/* 当前行有 R/E 两个语音时，Enter 在两者间切换重听 */
+function rowVoices(r){
+  const out = [];
+  if(r[cols.voice]) out.push(r[cols.voice]);                    // E 优先（正在核对的匹配）
+  if(cols.rvfn && r[cols.rvfn]) out.push(r[cols.rvfn]);
+  return out;
+}
+document.addEventListener("keydown", e => {
+  if(e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
+  if(e.key === "Enter" && playingIdx >= 0){
+    const vs = rowVoices(filtered[playingIdx]);
+    if(vs.length === 2){
+      e.preventDefault();
+      const cur = displayURLName(player.src).split("/").pop().replace(/\.(ogg|opus)$/, "");
+      play(vs[0].replace(/V$/i, "") === cur || vs[0] === cur ? vs[1] : vs[0], playingIdx);
+    }
+    return;
+  }
+  if(e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  if(!cols.voice || !filtered.length) return;
+  e.preventDefault();
+  const step = e.key === "ArrowRight" ? 1 : -1;
+  let i = playingIdx < 0 ? (step > 0 ? -1 : filtered.length) : playingIdx;
+  while(true){
+    i += step;
+    if(i < 0 || i >= filtered.length) return;
+    const vs = rowVoices(filtered[i]);
+    if(vs.length){
+      const newPage = Math.floor(i / PAGE) + 1;
+      if(newPage !== page){ page = newPage; render(); }
+      play(vs[0], i);
+      const tr = document.querySelector(`tr[data-gi="${i}"]`);
+      if(tr) tr.scrollIntoView({block: "center"});
+      return;
+    }
+  }
+});
+</script>
+</body>
+</html>
