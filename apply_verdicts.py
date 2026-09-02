@@ -5,7 +5,7 @@
   OK          -> MatchType 不变，Annotation 追加「自动校对:OK」
   WRONG       -> MyVoiceId/Old* 换成 correct_vid（multi 行同步清 Candidates），Annotation 追加校对依据
   FOUND       -> 未匹配行补上匹配（MatchType=matched，Old* 填全），Annotation 记录寻配证据
-  CANDIDATES  -> Candidates 列追加候选（若无），MatchType 保持 multi，Annotation 记录
+  CANDIDATES  -> 候选清单(vid+定位+文本摘录)写入 Annotation，MatchType 保持 multi
   SUSPECT     -> 只追加标注，不动匹配
   NO_VOICE / UNRESOLVED -> 不动匹配，Annotation 追加（确认 EVO 无此语音，后续可不再排查）
 
@@ -128,11 +128,22 @@ for vid, vs in by_id.items():
                                  'scene': r['RemakeScenaScriptFilename'], 'func': r['RemakeFunction'],
                                  'text': r['RemakeVoiceText'], 'reason': v.get('reason', '')})
     elif v['verdict'] == 'CANDIDATES':
-        cands = [c.get('vid') for c in v.get('candidates', []) if c.get('vid')]
-        # 候选清单记录在 summary（详表无 Candidates 列，由 s4/my_match_result 维护）
-        r['Annotation'] = (r['Annotation'] + '; ' + anno_add).strip('; ')
+        # 候选清单写入 Annotation: vid + 结构定位 + 文本摘录（全量证据仍见 summary / CANDIDATES_LIST）
+        cand_parts = []
+        for c in v.get('candidates', []):
+            cv = c.get('vid')
+            if not cv:
+                continue
+            info = vid_info.get(cv)
+            loc = f'{info[0]}/{info[1]}' if info else '?'
+            txt = (info[3] if info else c.get('text') or '').replace('\r', ' ')[:20]
+            cand_parts.append(f"{cv} {loc}『{txt}』")
+        cand_anno = ('候选: ' + ' | '.join(cand_parts)) if cand_parts else '候选: (无)'
+        r['Annotation'] = (r['Annotation'] + '; ' + anno_add + '; ' + cand_anno).strip('; ')
         applied['CANDIDATES'] += 1
-        summary['candidates'].append({'RemakeVoiceID': vid, 'candidates': cands, 'note': '候选见summary, 详表无此列'})
+        summary['candidates'].append({'RemakeVoiceID': vid,
+                                       'candidates': [c.get('vid') for c in v.get('candidates', []) if c.get('vid')],
+                                       'note': '候选已写入Annotation'})
     elif v['verdict'] == 'SUSPECT':
         r['Annotation'] = (r['Annotation'] + '; ' + anno_add).strip('; ')
         applied['SUSPECT'] += 1
