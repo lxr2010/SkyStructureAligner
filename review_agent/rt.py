@@ -62,6 +62,7 @@ def _wait_for_building_cache(timeout=30):
 
 vid_idx = {}          # vid -> {scene,func,block,talk_num,speaker,text}
 norm_list = []        # [(norm, vid_or_None, scene, func, text, voiced)]
+vid_pool = {}         # (录音组, take) -> {vid: text}  [rowhint 区间候选]
 unvoiced_norms = set()  # 无语音行的norm集合(用于do_find快速区分)
 
 _use_cache = os.path.exists(_CACHE_F) and not _src_newer_than_cache()
@@ -120,6 +121,11 @@ else:
     with open(_tmp, 'wb') as _f:
         pickle.dump((vid_idx, norm_list, unvoiced_norms, extra, BLOCK_KEYS), _f, protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(_tmp, _CACHE_F)   # 原子改名, 防并发读到半写文件
+
+# (录音组, take序号) -> {vid: text}: rowhint 区间候选(派生自 norm_list, 不入缓存)
+for _e in norm_list:
+    if _e[1] and _e[5]:
+        vid_pool.setdefault((_e[1][3:6], _e[1][6:]), {})[_e[1]] = _e[4]
 
 _msg_cache = {}
 def msg_line(vid):
@@ -384,8 +390,24 @@ def do_find(text, char=None, scene=None, limit=8, evoscene=None):
             h['note'] = 'EVO有此台词行但未配音(NO_VOICE)——结构验证参考, 不可配语音'
         hits.append(h)
     hits.sort(key=lambda x: (-x['sim'], x.get('voiced', True) is False))
-    return {'query': text, 'norm': n, 'hits': hits[:limit],
-            'unvoiced_exact_match': has_unvoiced_exact}
+    out = {'query': text, 'norm': n, 'hits': hits[:limit],
+           'unvoiced_exact_match': has_unvoiced_exact}
+    # 双程兜底: 带过滤且无 sim==100 有声命中时, 自动补一轮无过滤检索
+    if (char or scene or evoscene) and not any(h['sim'] == 100 and h.get('voiced', True) for h in hits):
+        unhits = []
+        for nt, vid, sc, fn, raw, voiced in norm_list:
+            if nt == n:
+                sim = 100.0
+            else:
+                sim = fuzz.ratio(n, nt)
+                if sim < 60: continue
+            if not voiced: continue
+            unhits.append({'vid': vid, 'sim': round(sim, 1), 'scene': sc, 'func': fn, 'text': raw[:60]})
+        unhits.sort(key=lambda x: -x['sim'])
+        if unhits:
+            out['unfiltered_fallback'] = unhits[:5]
+            out['note_fallback'] = '过滤检索无全等命中, 已自动追加无过滤检索(前5)'
+    return out
 
 def cmd_find(text, char=None, scene=None, limit=8, evoscene=None):
     r = do_find(text, char, scene, limit, evoscene)
@@ -696,6 +718,57 @@ def cmd_autook():
          'remaining_blocks': remain_blocks, 'remaining_lines': remain_lines,
          'skipped_sample': skipped[:15], 'skipped_count': len(skipped)})
 
+def cmd_rowhint(scene, func, key):
+    """行级结构提示: 给定块内行(行号或RemakeVoiceID), 返回其锚点区间内的候选take
+    优化1(锚点对齐器)的工具化出口, 供 find/findmany 之后的结构确认用。"""
+    rows = [r for r in det if r['RemakeScenaScriptFilename'] == scene and r['RemakeFunction'] == func]
+    if not rows:
+        out({'error': f'未找到块 {scene}/{func}'}); return
+    rows.sort(key=lambda r: int(r['RemakeScenaScriptLineno']))
+    row = next((r for r in rows if str(r['RemakeVoiceID']) == str(key)), None)         or next((r for r in rows if r['RemakeScenaScriptLineno'] == str(key)), None)
+    if row is None:
+        out({'error': f'行 {key} 不在块内(行号或RemakeVoiceID)'}); return
+    from rapidfuzz import fuzz
+    n = cnorm(row['RemakeVoiceText'])
+    anchors = []
+    for r in rows:
+        vf = r['OldVoiceFilename']
+        if vf:
+            v = vf[2:-1] if vf.startswith('ch') else vf
+            anchors.append((int(r['RemakeScenaScriptLineno']), v))
+    line = int(row['RemakeScenaScriptLineno'])
+    cur = None
+    vf = row['OldVoiceFilename']
+    if vf:
+        cur = vf[2:-1] if vf.startswith('ch') else vf
+    # 同录音组邻锚
+    g = cur[3:6] if cur else None
+    cand_g = [a for a in anchors if a[1][3:6] == g] if g else anchors
+    lo = max((a for a in cand_g if a[0] < line), default=None, key=lambda a: a[0])
+    hi = min((a for a in cand_g if a[0] > line), default=None, key=lambda a: a[0])
+    if g is None and lo and hi and lo[1][3:6] == hi[1][3:6]:
+        g = lo[1][3:6]          # 未配行: 组从同组邻锚推导
+    res = {'scene': scene, 'function': func, 'line': row['RemakeScenaScriptLineno'],
+           'rid': row['RemakeVoiceID'], 'text': row['RemakeVoiceText'][:60],
+           'cur_vid': cur, 'group': g, 'lo_anchor': lo, 'hi_anchor': hi}
+    if not (lo and hi):
+        res['note'] = '无同组双侧锚点, 区间不可用'
+        out(res); return
+    ta, tb = int(lo[1][6:]), int(hi[1][6:])
+    used = {a[1][6:] for a in anchors if a[1][3:6] == g}
+    cands = []
+    for t in range(ta + 1, tb):
+        tk = f'{t:04d}'
+        if tk in used: continue
+        for vid, text in vid_pool.get((g, tk), {}).items():
+            s = fuzz.ratio(n, cnorm(text)) if n else 0
+            cands.append({'vid': vid, 'take': tk, 'sim': round(s, 1), 'text': text[:50]})
+    cands.sort(key=lambda x: -x['sim'])
+    res['interval'] = f'{ta:04d}-{tb:04d}'
+    res['candidates'] = cands[:6]
+    out(res)
+
+
 if __name__ == '__main__':
     args = [a for a in sys.argv[1:]]
     if not args:
@@ -711,6 +784,11 @@ if __name__ == '__main__':
         cmd_pack(rest[0], rest[1])
     elif cmd == 'vid':
         cmd_vid(rest[0])
+    elif cmd == 'rowhint':
+        if len(rest) < 3:
+            out(_usage_err('rowhint', '用法: rowhint <场景> <函数> <行号|RemakeVoiceID>'))
+        else:
+            cmd_rowhint(rest[0], rest[1], rest[2])
     elif cmd == 'find':
         _kw = {}
         pos = []

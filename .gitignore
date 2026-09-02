@@ -23,3 +23,4 @@ data/*.json
 review_agent/stats/
 .codex/
 review_agent/findmany*.json
+review_agent/discovery_mining
