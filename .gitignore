@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+data/
+*.pyc
+s6_extract_cache.json
+llm_*.json
+review_pack/
+
+# 调试产物
+review_agent/find*_out.json
+review_agent/frag*.json
+review_agent/pack[0-9]*.json
+review_agent/cmp_*.txt
+review_agent/map_*.json
+review_agent/pack_*.json
+
+# 校对产物与备份(本地保留, 不入库)
+review_backup/
+review_agent/review_pack/
+data/*.csv
+data/*.json
+*.pkl
+review_agent/stats/
+.codex/
+review_agent/findmany*.json

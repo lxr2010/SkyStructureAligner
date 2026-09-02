@@ -1,0 +1,20 @@
+NOTICE - SkyStructureAligner
+=============================
+
+本项目的代码采用 GNU General Public License v3.0（见 LICENSE），继承自：
+
+1. lxr2010/TrailsInTheSkyRemakeScriptAligner (GPL-3.0)
+   - 吸收其 synonyms.py（轨迹系列术语同义映射 / Falcom 外字表 / normalize 归一化）
+   - additional_voice_{fc,sc,3rd}.json（脚本外语音数据）源自其 Release 资产
+   - 说话人映射种子 speaker_map_fc.json 参考其数据
+   https://github.com/lxr2010/TrailsInTheSkyRemakeScriptAligner
+
+2. 数据来源与工具（未吸收代码，特此致谢）：
+   - ZhenjianYang/SoraVoiceScripts —— evo_structure*.json 由其发布的 EVO 剧本
+     (cn.fc / cn.sc / cn.3rd 的 py + out.msg) 解析生成。该项目未附带独立许可文件，
+     本仓库仅以 Release 资产形式分发派生结构数据并保留此署名。
+     https://github.com/ZhenjianYang/SoraVoiceScripts
+   - nnguyen259/KuroTools (dat2py 反编译)、eArmada8/kuro_dlc_tool (pac 解包)、
+     Aureole-Suite/Ingert —— Remake 侧脚本提取工具链
+   - lxr2010/TrailsInTheSkyRemakeScriptAligner 的提取器设计（scena_voice_kuro_extractor）
+     参考用于 Cmd_text_13/UNKNOWN_05_13/Cmd_text_08 的变体识别
