@@ -41,12 +41,24 @@ def norm_key(elts):
                     if not (isinstance(e, ast.Call) and getattr(e.func, 'id', '') == 'UNDEF'))
 
 def parse_one(path):
-    """解析单个 .py: {'commands': [...], 'addstruct': {key: line}}"""
+    """解析单个 .py: {'commands': [...], 'addstruct': {key: line}, 'dispnames': [(sid,seq,name,line)]}"""
     tree = ast.parse(open(path, encoding='utf-8').read())
-    cmds, adds = [], {}
+    cmds, adds, dispnames = [], {}, []
+    _disp_seq = {}   # sid -> 出现序号(用于日中配对)
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
             continue
+        if node.func.id == 'CallFunction':
+            # chr_set_display_name(INT(sid), "名", ...) — 运行时改名, 提取用于日中翻译对照
+            if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == 'chr_set_display_name' \
+                    and len(node.args) > 1 and isinstance(node.args[1], ast.List) and len(node.args[1].elts) >= 2:
+                e0, e1 = node.args[1].elts[0], node.args[1].elts[1]
+                if isinstance(e0, ast.Call) and getattr(e0.func, 'id', '') == 'INT' \
+                        and e0.args and isinstance(e0.args[0], ast.Constant) \
+                        and isinstance(e1, ast.Constant) and isinstance(e1.value, str) and e1.value:
+                    sid = e0.args[0].value
+                    _disp_seq[sid] = _disp_seq.get(sid, 0) + 1
+                    dispnames.append((sid, _disp_seq[sid], e1.value, node.lineno))
         if node.func.id == 'Command':
             if not node.args or not isinstance(node.args[0], ast.Constant): continue
             ct = node.args[0].value
@@ -76,9 +88,9 @@ def parse_one(path):
                         adds.setdefault(norm_key(kw.value.elts), node.lineno)
                         break
     cmds.sort(key=lambda c: c['line'])
-    return {'commands': cmds, 'addstruct': adds}
+    return {'commands': cmds, 'addstruct': adds, 'dispnames': dispnames}
 
-CACHE_VER = 'v2'   # 提取器变更(如新增rid字段)时递增, 使缓存失效
+CACHE_VER = 'v3'   # 提取器变更(如新增rid/dispnames字段)时递增, 使缓存失效
 CACHE_PATH = os.path.join(W, 's6_extract_cache.json')
 
 def extract_dir_cached(d, cache, tag):
@@ -93,7 +105,7 @@ def extract_dir_cached(d, cache, tag):
             continue
         cache.setdefault(tag, {})[fn] = {'_sig': sig, **parse_one(os.path.join(d, fn))}
         changed += 1
-    return {fn: {'commands': e['commands'], 'addstruct': e['addstruct']}
+    return {fn: {'commands': e['commands'], 'addstruct': e['addstruct'], 'dispnames': e.get('dispnames', [])}
             for fn, e in cache.get(tag, {}).items()}, changed
 
 cache = {}
@@ -108,6 +120,19 @@ sc, ch2 = extract_dir_cached(SC_DIR, cache, 'sc')
 if ch1 or ch2 or not os.path.exists(CACHE_PATH):
     json.dump(cache, open(CACHE_PATH, 'w', encoding='utf-8'), ensure_ascii=False)
 print(f'  缓存: jp重解析{ch1} sc重解析{ch2} / 各{len(jp)},{len(sc)}文件')
+
+# ---------- 日中动态显示名对照(chr_set_display_name 按场景×ID×序号配对) ----------
+_disp_jp2sc = {}
+for fn in set(jp) & set(sc):
+    jp_dn = jp[fn].get('dispnames', [])
+    sc_dn = sc[fn].get('dispnames', [])
+    sc_map = {(sid, seq): name for sid, seq, name, _ in sc_dn}
+    for sid, seq, jp_name, _ in jp_dn:
+        sc_name = sc_map.get((sid, seq))
+        if sc_name and jp_name:
+            _disp_jp2sc[jp_name] = sc_name
+if _disp_jp2sc:
+    print(f'  动态显示名日中对照: {len(_disp_jp2sc)} 条')
 
 def cf(text):
     return normalize(text).replace('\u3046\u3099', 'う').replace('ヴ', 'う') if text else ''
@@ -284,12 +309,17 @@ def _jp_zh_by_code():
     return m
 _JP2ZH = _jp_zh_by_code()
 def display_zh(jp_name, speaker_code=''):
-    """日文显示名 -> 中文; 优先同码直取(变装名也按码对齐), 兜底按名查"""
+    """日文显示名 -> 中文; 优先简中py同名调用直取, 次选t_name同码, 兜底日中名对照"""
     if not jp_name:
         return ''
+    # 1) 简中py里 chr_set_display_name 的直接翻译(最准确)
+    if jp_name in _disp_jp2sc:
+        return _disp_jp2sc[jp_name]
+    # 2) t_name 同说话人码且日文名吻合
     z = _tnz.get(str(speaker_code)) if speaker_code != '' else None
     if z and _tn.get(str(speaker_code), {}).get('jp') == jp_name and z.get('jp'):
         return z['jp']
+    # 3) 日中名对照兜底
     return _JP2ZH.get(jp_name, '')
 def evo_char_display_zh(prefix, jp_name=''):
     e = char_names.get(prefix) or {}
