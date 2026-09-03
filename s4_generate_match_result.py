@@ -23,6 +23,12 @@ sm = json.load(open(require(f'speaker_map_{GAME}.json')))
 add = json.load(open(require(f'additional_voice_{GAME}.json')))
 _sms_p = os.path.join(W, f'speaker_map_scene_{GAME}.json')
 sm_scene = json.load(open(_sms_p, encoding='utf-8')) if os.path.exists(_sms_p) else {}
+# EVO前缀归属统计(s2 --prefix-stats 产物): shared=多全局ID均势共用, npc=群众/广播类无全局ID
+# 用于把「说话人不对应」细分为: 差异前缀为共用/群众 -> 很可能是合法改派而非错配
+_eps_p = resolve(f'evo_prefix_stats_{GAME}.json')
+prefix_stats = json.load(open(_eps_p, encoding='utf-8')) if _eps_p else {}
+def prefix_kind(p):
+    return prefix_stats.get(p, {}).get('kind', '?')
 def rem_char(spk, scene=None):
     """说话人码 -> EVO角色码；优先场景条件映射（如 21000 女性广播 依场景为 088/386）"""
     if spk is None: return None
@@ -130,19 +136,90 @@ for sc, funcs in evo.items():
 
 # 锚点：(角色码, norm) 两边唯一（考虑说话人）
 remake_key = defaultdict(list)
+remake_skind = {}   # (char, norm) -> skind（var/fixed，用于分级锚点）
 for sc, funcs in remake.items():
     for fn, f in funcs.items():
         for lab, blk in f['blocks'].items():
             for t in blk:
                 n = clean_final(t['text']); char = rem_char(t['speaker'], sc)
-                if n and char: remake_key[(char, n)].append((sc, fn, lab))
+                if n and char:
+                    remake_key[(char, n)].append((sc, fn, lab))
+                    remake_skind[(char, n)] = t.get('skind', 'fixed')
 anchor_keys = {k for k in evo_key if len(evo_key[k])==1 and len(remake_key.get(k,[]))==1}
+
+# ---------- 分级锚点（按说话人确定性扩大锚点范围） ----------
+# Level 2: 确定说话人 + shared/npc前缀 — 文本在该前缀域下唯一即可锚定（不要求精确char等值）
+#   适用: 088广播/362群众等多人共用前缀，Remake改派到共用者属合法
+# Level 3: var说话人 — 纯文本全局唯一（不限char），且候选char ≤2（防泛用句误锚）
+# Level 4: 场景依赖 — speaker_map_scene 已在 rem_char 内处理，此处不重复
+_shared_npc_prefixes = {p for p, v in prefix_stats.items() if v.get('kind') in ('shared', 'npc')}
+
+# norm -> [(char, [vids])]，用于L2/L3检索
+_norm_to_evo = defaultdict(list)
+for (c, nn), vs in evo_key.items():
+    _norm_to_evo[nn].append((c, vs))
+
+anchor_l2 = {}   # (char, norm) -> vid   Level 2 新增锚点
+anchor_l3 = {}   # norm -> vid           Level 3 新增锚点（无char约束）
+
+# remake侧 norm -> [skind, char]，判断哪些行还没被基线锚点覆盖
+_rem_norm_info = defaultdict(list)   # norm -> [(char, skind, scene)]
+for sc, funcs in remake.items():
+    for fn, f in funcs.items():
+        for lab, blk in f['blocks'].items():
+            for t in blk:
+                n = clean_final(t['text'])
+                if n:
+                    _rem_norm_info[n].append((rem_char(t['speaker'], sc), t.get('skind','fixed'), sc))
+
+for n, entries in _rem_norm_info.items():
+    # 该norm已被基线锚点覆盖 → 跳过
+    if any(c and (c, n) in anchor_keys for c, _, _ in entries):
+        continue
+    evo_hits = _norm_to_evo.get(n, [])
+    if not evo_hits:
+        continue
+    all_vids = set()
+    for c, vs in evo_hits:
+        all_vids |= set(vs)
+    chars = {c for c, _ in evo_hits}
+
+    # Level 2: 确定说话人(fixed) + 命中均在shared/npc前缀 + 全局唯一vid
+    has_fixed = any(sk == 'fixed' for _, sk, _ in entries)
+    if has_fixed and len(all_vids) == 1 and chars and all(c in _shared_npc_prefixes for c in chars):
+        anchor_l2[n] = list(all_vids)[0]
+        continue
+
+    # Level 3: var说话人 + 全局唯一vid + 候选char≤2（防泛用句误锚）
+    has_var = any(sk == 'var' for _, sk, _ in entries)
+    if has_var and len(all_vids) == 1 and len(chars) <= 2:
+        anchor_l3[n] = list(all_vids)[0]
+
+# 合并到 anchor_keys 体系: block_segs 构建时的锚点判定扩大
+_l2_l3_anchor_vid = {}   # norm -> vid（L2/L3产生的锚点映射）
+for n, v in anchor_l2.items():
+    _l2_l3_anchor_vid[n] = v
+for n, v in anchor_l3.items():
+    _l2_l3_anchor_vid.setdefault(n, v)
+
+if anchor_l2 or anchor_l3:
+    print(f'分级锚点: L2(shared/npc) {len(anchor_l2)} + L3(var) {len(anchor_l3)} = +{len(anchor_l2)+len(anchor_l3)} 新锚点')
 
 block_segs = {}
 for sc, funcs in remake.items():
     for fn, f in funcs.items():
         for lab, blk in f['blocks'].items():
-            toks = [(clean_final(t['text']), rem_char(t['speaker'], sc), vid_to_evoblk.get(evo_key[(rem_char(t['speaker'], sc), clean_final(t['text']))][0]) if (rem_char(t['speaker'], sc), clean_final(t['text'])) in anchor_keys else None, t['text'], t['speaker'], t.get('rid')) for t in blk]
+            def _anchor_blk(t, _sc=sc):
+                """行的锚点EVO块: 基线(char,norm)唯一 → L2/L3(norm唯一) → None"""
+                n = clean_final(t['text'])
+                ch = rem_char(t['speaker'], _sc)
+                if ch and (ch, n) in anchor_keys:
+                    return vid_to_evoblk.get(evo_key[(ch, n)][0])
+                v = _l2_l3_anchor_vid.get(n)
+                if v:
+                    return vid_to_evoblk.get(v)
+                return None
+            toks = [(clean_final(t['text']), rem_char(t['speaker'], sc), _anchor_blk(t), t['text'], t['speaker'], t.get('rid'), t.get('skind'), t.get('disp')) for t in blk]
             segs = split_block(toks)
             info = []
             for seg in segs:
@@ -200,7 +277,7 @@ while changed:
                     valid = [t for t in all_cand if evo_block_char(evo[escene][efn]['blocks'][t]) == r_char]
             if len(valid) == 1:
                 blk_data = remake[rscene][rfn]['blocks'].get(rt, [])
-                block_segs[rnxt] = [([(clean_final(t['text']), rem_char(t['speaker'], rscene), None, t['text'], t['speaker'], t.get('rid')) for t in blk_data], (escene, efn, valid[0]))]
+                block_segs[rnxt] = [([(clean_final(t['text']), rem_char(t['speaker'], rscene), None, t['text'], t['speaker'], t.get('rid'), t.get('skind'), t.get('disp')) for t in blk_data], (escene, efn, valid[0]))]
                 propagated.add(rnxt); aligned.add(rnxt); changed = True
 
 def refine_segment(seg, evo_blk):
@@ -229,6 +306,11 @@ for sc, funcs in remake.items():
                 k = (rem_char(t.get('speaker'), sc), clean_final(t['text']))
                 if k in anchor_keys:
                     vid = evo_key[k][0]
+                    eblk = vid_to_evoblk.get(vid)
+                    if eblk: anchors_evofn[(eblk[0], eblk[1])] += 1
+                # 分级锚点也参与函数级投票
+                elif clean_final(t['text']) in _l2_l3_anchor_vid:
+                    vid = _l2_l3_anchor_vid[clean_final(t['text'])]
                     eblk = vid_to_evoblk.get(vid)
                     if eblk: anchors_evofn[(eblk[0], eblk[1])] += 1
         if len(anchors_evofn) == 1:
@@ -297,10 +379,14 @@ for rblk, segs in block_segs.items():
     for seg, evo_blk in segs:
         block_vids = evo_block_vids.get(evo_blk, set()) if evo_blk is not None else set()
         refine = refine_segment(seg, evo_blk) if evo_blk is not None else {}
-        for norm, char, ablk, text, spk, rid in seg:
+        for norm, char, ablk, text, spk, rid, skind, disp in seg:
             # 候选（script_data + additional_voice；标点边缘放松二级键兜底）
             cand, relaxed = get_cands(char, norm)
             cand = list(cand)
+            # 分级锚点兜底: L2/L3锚点命中的行，即使char不匹配也注入锚点vid
+            _l23 = _l2_l3_anchor_vid.get(norm)
+            if _l23 and _l23 not in cand:
+                cand.insert(0, _l23)
             cand_add = list(add_key.get((char, norm), []))
             if ablk is not None:
                 # 锚点：角色码+文本唯一的 voice_id
@@ -345,17 +431,31 @@ for rblk, segs in block_segs.items():
             # 同文本异角色=未匹配但该文本在 EVO 存在于其他角色(疑似说话人映射错/改派)
             # 说话人未映射=说话人码无映射但仍有匹配(救援行常见)
             spk_match = ''
+            spk_note = ''
+            if skind == 'var':
+                spk_note = '说话人动态传参(公共库/VAR,静态不定)'
             if uniq and char:
-                spk_match = '对应' if all(v[:3] == char for v in uniq) else f'说话人不对应(语音角色{",".join(sorted({v[:3] for v in uniq}))})'
+                diff = sorted({v[:3] for v in uniq} - {char})
+                if not diff:
+                    spk_match = '对应'
+                elif all(prefix_kind(p) in ('shared', 'npc') for p in diff):
+                    # 差异前缀是多人共用/群众配音(如088广播,423/425猎兵): 场景内改派很可能是合法的
+                    spk_match = f'说话人不对应·共用前缀(语音角色{",".join(sorted({v[:3] for v in uniq}))})'
+                    spk_note = (spk_note + '; ' if spk_note else '') +                                f'语音角色{",".join(diff)}={",".join(prefix_kind(p) for p in diff)}前缀,需按场景×角色段判定'
+                else:
+                    spk_match = f'说话人不对应(语音角色{",".join(sorted({v[:3] for v in uniq}))})'
             elif uniq and not char:
-                spk_match = f'说话人未映射(语音角色{",".join(sorted({v[:3] for v in uniq}))})'
+                if skind == 'var':
+                    spk_match = f'说话人不定·VAR(语音角色{",".join(sorted({v[:3] for v in uniq}))})'
+                else:
+                    spk_match = f'说话人未映射(语音角色{",".join(sorted({v[:3] for v in uniq}))})'
             elif not uniq and norm:
                 others = sorted(norm_chars.get(norm, set()) - ({char} if char else set()))
                 if others:
                     spk_match = f'同文本异角色({",".join(others[:4])})'
             eblk = vid_to_evoblk.get(uniq[0]) if uniq else None
             out.append((sc, fn, lab, text, spk, char, uniq[0] if uniq else '', '|'.join(uniq), ty, '|'.join(src), spk_match,
-                        eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', rid))
+                        eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', rid, spk_note, disp or ''))
 
 # ---------- multi 夹逼：用邻行已定 vid 的末四位连续性消歧 ----------
 # 同时覆盖: 无候选但全局存在段外差分候选(2-4条)的行（QS测验等块对齐失败区域）
@@ -400,7 +500,7 @@ for (sc, fn), seq in seq_by_fn.items():
             src_new = '|'.join(src_l + [how + ('·段外' if ty_ == '无候选' else '')])
             eblk = vid_to_evoblk.get(pick)
             out[i] = (*out[i][:6], pick, out[i][7], '唯一', src_new, out[i][10],
-                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', out[i][14])
+                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', out[i][14], out[i][15], out[i][16])
             bracket_stat[how + ('·段外' if ty_ == '无候选' else '')] += 1
 
 # ---------- 块内连续段救援：整块无候选的行，全局候选按台词顺序串成严格递增 vid 链 ----------
@@ -505,7 +605,7 @@ for (sc, fn, lab), idxs in blk_rows.items():
                 sm_ = f'链内角色不符(语音角色{v[:3]})'
                 run_stat['链内角色不符'] += 1
             out[i] = (*out[i][:6], v, out[i][7], '唯一', src_tag, sm_,
-                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', out[i][14])
+                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', out[i][14], out[i][15], out[i][16])
         run_stat[src_tag.split('|')[1]] += len(best)
         # 改写行的位置约束模糊：块内无精确候选的行，在两侧已定 vid 夹出的同场景窗口内模糊匹配
         order = [i for i in idxs]
@@ -537,13 +637,13 @@ for (sc, fn, lab), idxs in blk_rows.items():
                 run_stat['链内角色不符'] += 1
             eblk = vid_to_evoblk.get(bv)
             out[i] = (*out[i][:6], bv, out[i][7], '唯一', 'script|块内连续段·模糊', sm_,
-                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', out[i][14])
+                      eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', out[i][14], out[i][15], out[i][16])
             run_stat['块内连续段·模糊'] += 1
 
 OUT = os.path.join(W, f'my_match_result{SUF}.csv')
 with open(OUT, 'w', newline='', encoding='utf-8') as f:
     w = csv.writer(f)
-    w.writerow(['Scene', 'Function', 'Block', 'RemakeVoiceText', 'Speaker', 'SpeakerChar', 'MyVoiceId', 'Candidates', 'MatchType', 'Source', 'SpeakerMatch', 'EvoScene', 'EvoFunction', 'EvoBlock', 'RemakeVoiceId'])
+    w.writerow(['Scene', 'Function', 'Block', 'RemakeVoiceText', 'Speaker', 'SpeakerChar', 'MyVoiceId', 'Candidates', 'MatchType', 'Source', 'SpeakerMatch', 'EvoScene', 'EvoFunction', 'EvoBlock', 'RemakeVoiceId', 'SpeakerNote', 'RemakeDisplay'])
     for row in out:
         w.writerow(row)
 
