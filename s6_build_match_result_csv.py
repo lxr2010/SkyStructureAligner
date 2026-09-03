@@ -242,6 +242,84 @@ for x in json.load(open(require('additional_voice_sc.json'), encoding='utf-8')):
 _tv_p = resolve(f't_voice_{GAME}.json')
 t_voice = json.load(open(_tv_p, encoding='utf-8')) if _tv_p else {}
 
+# EVO 角色显示名(char_names 由 review_agent/build_char_names.py 生成) 与 前缀归属/共用标注
+_cn_p = resolve(f'char_names_{GAME}.json')
+char_names = json.load(open(_cn_p, encoding='utf-8')) if _cn_p else {}
+_eps = resolve(f'evo_prefix_stats_{GAME}.json')
+prefix_stats = json.load(open(_eps, encoding='utf-8')) if _eps else {}
+_vli = resolve(f'voice_lookup_index_{GAME}.json')
+_vli_d = json.load(open(_vli, encoding='utf-8')) if _vli else {}
+vote_shared = set(_vli_d.get('evo_shared_prefixes', []))
+# 行级实体归属(按 场景×日文py行号, 与 RemakeScenaScriptLineno 同坐标系): 判定"本行实体"是否投票分裂
+_vli_ent = _vli_d.get('entities', {})
+_row_entity = {}
+for _f, _recs in (_vli_d.get('lines', {}) or {}).items():
+    for _ln, _r in _recs.items():
+        _ek = _r.get('entity_key')
+        if _ek:
+            _row_entity[(_f, int(_ln))] = _ek
+
+def row_entity_split(scene, line):
+    """本行所属实体是否存在段内投票分裂(多人共用实锤); 非该实体分裂不株连"""
+    ek = _row_entity.get((scene, int(line)))
+    if not ek:
+        return False
+    return bool(_vli_ent.get(ek, {}).get('has_multi_shared_group'))
+
+def evo_char_display(prefix):
+    e = char_names.get(prefix) or {}
+    return e.get('jpn') or e.get('eng') or ''
+
+# 中日名字互译(speaker_names_t_name_zh 由 table_sc.pac 的 t_name.tbl 提取, 键与日文表对齐)
+_tn_p = resolve(f'speaker_names_t_name_{GAME}.json')
+_tn = json.load(open(_tn_p, encoding='utf-8')) if _tn_p else {}
+_tnz_p = resolve(f'speaker_names_t_name_zh_{GAME}.json')
+_tnz = json.load(open(_tnz_p, encoding='utf-8')) if _tnz_p else {}
+def _jp_zh_by_code():
+    m = {}
+    for k, v in _tn.items():
+        z = _tnz.get(k)
+        if z and z.get('jp') and v.get('jp'):
+            m[v['jp']] = z['jp']
+    return m
+_JP2ZH = _jp_zh_by_code()
+def display_zh(jp_name, speaker_code=''):
+    """日文显示名 -> 中文; 优先同码直取(变装名也按码对齐), 兜底按名查"""
+    if not jp_name:
+        return ''
+    z = _tnz.get(str(speaker_code)) if speaker_code != '' else None
+    if z and _tn.get(str(speaker_code), {}).get('jp') == jp_name and z.get('jp'):
+        return z['jp']
+    return _JP2ZH.get(jp_name, '')
+def evo_char_display_zh(prefix, jp_name=''):
+    e = char_names.get(prefix) or {}
+    return display_zh(jp_name or (e.get('jpn') or e.get('eng') or ''))
+
+def evo_speaker_notes(prefix, char_id, scene='', line=''):
+    """EVO侧说话人备注: 前缀归属(main/shared/npc) + char_id全局/局部 + 本行实体投票分裂"""
+    if not prefix:
+        return ''
+    parts = []
+    kind = prefix_stats.get(prefix, {}).get('kind')
+    if kind == 'main':
+        parts.append('main=单角色配音')
+    elif kind == 'shared':
+        parts.append('shared=多全局ID共用')
+    elif kind == 'npc':
+        parts.append('npc=群众/广播类(无全局ID)')
+    if prefix in vote_shared:
+        if scene and line and row_entity_split(scene, line):
+            parts.append('本行实体投票分裂=多人共用实锤')
+        else:
+            parts.append('该前缀存在分裂记录(他段共用,本行未必)')
+    if char_id:
+        try:
+            ci = int(char_id, 16)
+            parts.append(f'char_id {char_id}=' + ('全局角色ID' if ci >= 0x100 else '场景局部槽/系统标记'))
+        except ValueError:
+            pass
+    return '; '.join(parts)
+
 def evo_struct(vid):
     b = vid_to_evoblk.get(vid)
     return f'{b[0]}/{b[1]}/{b[2]}' if b else ''
@@ -255,7 +333,10 @@ COLS = ['RemakeVoiceID', 'RemakeOriginalVoiceID', 'RemakeScenaScriptFilename', '
         'RemakeScenaScriptAddStructLineno', 'RemakeScenaScriptTranslationLineno',
         'RemakeScenaScriptTranslationAddStructLineno', 'RemakeFunction', 'RemakeBlock', 'RemakeVoiceFilename', 'VoiceReuseAlert',
         'OldScriptId', 'OldCharacterId', 'OldVoiceFilename', 'MatchType',
-        'SpeakerCheck', 'RemakeVoiceCategory', 'RemakeVoiceTranslation',
+        'SpeakerCheck', 'SpeakerNote', 'RemakeSpeakerID', 'RemakeSpeakerName', 'RemakeSpeakerNameTranslation',
+        'RemakeCharacterDisplay', 'RemakeCharacterDisplayTranslation',
+        'EvoCharacterDisplay', 'EvoCharacterDisplayTranslation', 'EvoSpeakerNotes',
+        'RemakeVoiceCategory', 'RemakeVoiceTranslation',
         'RemakeVoiceText', 'OldVoiceText', 'EvoScene', 'EvoFunction', 'EvoBlock',
         'Annotation']
 out = []
@@ -303,6 +384,14 @@ for fn in sorted(jp):
             if _rid:
                 row['RemakeVoiceFilename'] = t_voice.get(str(_rid), {}).get('f', '')
             row['SpeakerCheck'] = m['SpeakerMatch'] if m['SpeakerMatch'] != '对应' else ''
+            row['SpeakerNote'] = m.get('SpeakerNote') or ''   # 说话人不确定性/共用前缀说明(s4)
+            row['RemakeSpeakerID'] = m.get('Speaker') or ''
+            _tn_spk = _tn.get(str(row['RemakeSpeakerID']), {})
+            row['RemakeSpeakerName'] = _tn_spk.get('jp', '')   # t_name 说话人正式角色名
+            row['RemakeSpeakerNameTranslation'] = _tnz.get(str(row['RemakeSpeakerID']), {}).get('jp', '')
+            row['RemakeCharacterDisplay'] = m.get('RemakeDisplay') or ''   # 运行时显示名(变装/匿名)
+            row['RemakeCharacterDisplayTranslation'] = display_zh(
+                row['RemakeCharacterDisplay'], m.get('Speaker') or '')
         if m is None:
             row['MatchType'] = 'unmatched'
             anno.append('结构未覆盖')
@@ -318,6 +407,11 @@ for fn in sorted(jp):
                     row['MatchType'] = 'voiceonly'
                 row['OldVoiceFilename'] = 'ch' + vid + 'V'
                 row['OldVoiceText'] = vid_text.get(vid, '')
+                row['EvoCharacterDisplay'] = evo_char_display(vid[:3])
+                row['EvoCharacterDisplayTranslation'] = evo_char_display_zh(
+                    vid[:3], row['EvoCharacterDisplay'])
+                row['EvoSpeakerNotes'] = evo_speaker_notes(
+                    vid[:3], row['OldCharacterId'], scene, c['line'])
                 anno.append(f"结构匹配:{m['MatchType']}({m['Source']}) {m['Block']}")
             elif m['MatchType'] == '多候选':
                 cands = [x for x in m['Candidates'].split('|') if x]
@@ -378,7 +472,7 @@ with open(REUSE_OUT, 'w', newline='', encoding='utf-8') as f:
 # ---------- 说话人校对清单（长表：一行一个候选，经 RemakeVoiceID 关联主表） ----------
 REVIEW = os.path.join(W, f'speaker_review_{GAME}.csv')
 REVIEW_COLS = ['RemakeVoiceID', 'RemakeOriginalVoiceID', 'RemakeScenaScriptFilename', 'RemakeScenaScriptLineno',
-               'RemakeFunction', 'RemakeBlock', 'RemakeVoiceFilename', 'RemakeNote', 'ReviewReason', 'SpeakerChar',
+               'RemakeFunction', 'RemakeBlock', 'RemakeVoiceFilename', 'RemakeNote', 'ReviewReason', 'SpeakerChar', 'SpeakerNote',
                'RemakeVoiceText', 'RemakeVoiceTranslation',
                'CandRole', 'CandVoiceId', 'CandChar', 'CandVoiceText',
                'CandEvoScene', 'CandEvoFunction', 'CandEvoBlock', 'EvoNote', 'Verdict']
@@ -418,6 +512,7 @@ for r in out:
             'RemakeNote': remake_note(scene, r['RemakeFunction']),
             'ReviewReason': reason,
             'SpeakerChar': m['SpeakerChar'],
+            'SpeakerNote': m.get('SpeakerNote') or '',
             'RemakeVoiceText': r['RemakeVoiceText'],
             'RemakeVoiceTranslation': r['RemakeVoiceTranslation'],
             'CandRole': role,
