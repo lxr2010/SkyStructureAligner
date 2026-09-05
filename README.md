@@ -74,7 +74,9 @@ foreach ($f in Get-ChildItem script\scena\*.dat) { python KuroTools/dat2py.py --
 # 简中版: 对 script_sc.pac 重复一次（翻译列用）
 ```
 
-EVO 侧结构已随 Release 分发（`evo_structure{,_sc,_3rd}.json`），无需自建；如需重建：
+EVO 侧结构已随 Release 分发（`evo_structure{,_sc,_3rd}.json`），无需自建；pure_evo 分支使用 6 个 EVO 数据源文件（见上方数据资产节）。
+
+如需重建 main 分支的结构：
 
 ```bash
 git clone https://github.com/ZhenjianYang/SoraVoiceScripts.git SoraVoiceScripts-zhenjian
@@ -109,7 +111,7 @@ s6  详表生成（FC 16 列 + RemakeFunction/Block + EvoScene/Function/Block + 
 
 ## 自动校对智能体（review_agent/）
 
-对匹配结果做**逐块自动化校对**——Flash 级模型即可可靠驱动，无需强模型。详见 [review_agent/README.md](review_agent/README.md)。
+对匹配结果做**逐块自动化校对**——Flash 级模型即可可靠驱动，无需强模型。详见 [review_agent/README.md](review_agent/README.md)。工具套组 rt.py v2（13 条命令四组分工，含 take 缺口候选/组冲突警报/AT9 存在性等 pure_evo 新能力）。
 
 ### 架构
 
@@ -167,13 +169,65 @@ s6  详表生成（FC 16 列 + RemakeFunction/Block + EvoScene/Function/Block + 
 5. 对比其他匹配器（可选）：`tmp_gap_review_sc.py` 生成与线性匹配的差异表
    `gap_review_sc.csv`（BlockAlert 同块告警）+ `gap_block_review_sc.csv`（块级汇总）。
 
-## 数据资产（Release v1.0.0）
+## 数据资产
+
+### main 分支（Release v1.0.0，公开分发）
 
 | 资产 | 说明 |
 |------|------|
 | `evo_structure.json / _sc / _3rd` | EVO 三部曲控制流结构（源自 SoraVoiceScripts，解析含 NpcTalk/外字/注音/尾部找回） |
 | `additional_voice_{fc,sc,3rd}.json` | 脚本外语音（继承自前项目） |
 | `speaker_map_{fc,sc}.json` | 说话人映射种子 |
+
+### pure_evo 分支（6 个 EVO 数据源文件，不公开分发）
+
+> **来源**：通过对比 EVO 原始解包数据对 Release 资产做行级微调（vid/msg_id/cast/speaker 原生对齐），提升匹配精度。EVO 数据源文件的解析方式不公开。
+>
+> **依赖关系**：本分支的管线依赖以下 6 个文件；放到 `data/` 目录后运行 `adopt_evo_pure.py` 一键接入。
+>
+> **与 main 分支的关系**：main 分支的 Release 资产仍可正常运行（不需要这 6 个文件），达到接近效果（见下方基准对比）。
+
+| # | 文件 | 大小 | 是什么 | 怎么用 |
+|---|------|------|--------|--------|
+| 1 | `evo_structure_pure_sc.json` | 22.2 MB | EVO 原始控制流结构（场景→函数→块/边→台词，含 voice_id/msg_id/cast/speaker 原生字段） | `adopt_evo_pure.py` 的唯一大输入；产出 `evo_structure_sc.json` / `script_data_sc.json` / `evo_talk_bank_index_sc.json` |
+| 2 | `evo_speaker_names_sc.json` | 67 KB | EVO 说话人知识库：bank→名字/中文名/身份状态（charid投票 / cast表反查 / 名框投票 / 继承静态分析） + T_NAME 原生角色名表 | 直接被 `evo_speaker_info.py`（s2/s4/s6/s7/rt.py 共用）读取；无需再生成 |
+| 3 | `evo_bank_index_sc.json` | 973 KB | EVO bank 档案：行数/场景/槽位分布/显示名/乱入记录 | `rt.py bank` 命令直接读取；说话人辨析参考 |
+| 4 | `evo_cast_table.json` | 13 KB | cast 码→bank/角色名 映射表（cast→bank 纯度 1.0，人工分析沉淀） | `build_evo_bank_index_pure.py` 重建 bank 知识库时读取；pure 更新后可能需要同步 |
+| 5 | `additional_voice_sc.json` | 504 KB | **未引用录音登记表**：EVO 脚本未引用但音频文件真实存在的 take（文本为转写，可能有误听） | `s4` 匹配候选源 + `rt.py vid` 补录 take 提示 + 缺口仲裁文本证据 |
+| 6 | `at9_names_sc.csv` | 657 KB | EVO 音频文件名清单（44,839 个 vid，含未引用录音） | `rt.py vid/runcheck` 的 AT9 存在性检查（`at9_exists` 字段） + `build_unreferenced_takes.py` 的全集口径 |
+
+**净室验证**：仅这 6 个文件 + Remake 侧（反编译 py + t_voice）即可从零跑完 s1→derive→s4→s6 全管线，不需要 SoraVoiceScripts 或旧 script_data。
+
+**安装步骤**：
+
+```bash
+# 1. 把 6 个文件放到 data/ 目录
+cp evo_structure_pure_sc.json evo_speaker_names_sc.json evo_bank_index_sc.json \
+   evo_cast_table.json additional_voice_sc.json at9_names_sc.csv data/
+
+# 2. 一键接入（产出 evo_structure_sc / script_data_sc / evo_talk_bank_index_sc + 清 rt 缓存）
+uv run python adopt_evo_pure.py
+
+# 3. 正常跑管线
+uv run python s1_build_remake_structure.py sc <日文py目录>
+uv run python derive_speaker_map.py sc
+uv run python s2_build_evo_structure.py sc --prefix-stats
+uv run python s4_generate_match_result.py sc
+uv run python s6_build_match_result_csv.py sc <日文py目录> [简中py目录]
+```
+
+### 基准对比：main vs pure_evo（同一 29,305 行 SC Demo，人工基准 29,229 公共行）
+
+> 人工基准 = 人工校对的匹配结果表（29,229 行两表公共行）；文本保真度 = 以 pure 原生文本独立验证所配 vid 的台词全等率。
+
+| 指标 | main（Release 资产） | pure_evo（6 文件） | 差 |
+|------|------|------|------|
+| 唯一确定 | 18,374 | 18,342 | -32 |
+| 基准一致率（A/(A+B+C+D)） | 93.24% | 92.94% | -0.30pt |
+| 文本保真度 | 96.74% | **96.87%** | +0.13pt |
+| 与基准配对不同行 | — | 169 | 净 +125 行 pure 对 |
+
+差异解读：169 行不同里，**141 行 pure 侧文本全等 vs 16 行 main 侧全等**（pure 原生文本仲裁），净 +125 行 pure 在修正 main 侧的 vid 归属错误（SoraVoice 漏标/错标）。表面一致率略降是因为 pure 修正后的配对偏离了人工基准（人工基准在这批行也有错误）。
 
 
 ## 许可
