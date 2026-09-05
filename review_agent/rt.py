@@ -46,6 +46,13 @@ def _det():
         det = list(csv.DictReader(open(_det_p, encoding='utf-8')))
     return det
 
+_det_by_id_cache = None   # 懒加载: id -> 行, 提交校验用(未匹配行禁OK/WRONG)
+def _det_by_id():
+    global _det_by_id_cache
+    if _det_by_id_cache is None:
+        _det_by_id_cache = {str(r['RemakeVoiceID']): r for r in _det()}
+    return _det_by_id_cache
+
 remake_st = None    # 懒加载: 仅 pack 使用
 def _remake_st():
     global remake_st
@@ -628,6 +635,13 @@ def cmd_submitmany(raw):
     ok_lines, errors = [], []
     for i, v in enumerate(items):
         err = check_verdict(v)
+        if err is None:
+            # 表级校验: id须存在于主表; 未匹配行(无现配)禁OK/WRONG
+            row = _det_by_id().get(str(v.get('RemakeVoiceID')))
+            if row is None:
+                err = '主表中无此RemakeVoiceID(行号不是id, 勿提交)'
+            elif not row.get('OldVoiceFilename') and v.get('verdict') in ('OK', 'WRONG'):
+                err = '未匹配行无现配, 禁OK/WRONG; 应为 FOUND(+correct_vid)/CANDIDATES/NO_VOICE/UNRESOLVED'
         if err:
             errors.append({'index': i,
                            'RemakeVoiceID': v.get('RemakeVoiceID') if isinstance(v, dict) else None,
@@ -662,6 +676,8 @@ def cmd_submitmap(scene, func, raw):
             errors.append({'key': k, 'error': '不在块内(既非行号也非RemakeVoiceID)'}); continue
         if verdict not in ('OK', 'UNRESOLVED'):
             errors.append({'key': k, 'error': f'submitmap 仅支持 OK/UNRESOLVED, {verdict} 请走 submitmany'}); continue
+        if verdict == 'OK' and not r['OldVoiceFilename']:
+            errors.append({'key': k, 'error': '未匹配行无现配不能OK; 该行走 submitmany 给 FOUND/NO_VOICE/UNRESOLVED/CANDIDATES'}); continue
         rid = str(r['RemakeVoiceID'])
         if rid in done:
             skipped += 1; continue

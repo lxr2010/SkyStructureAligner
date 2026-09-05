@@ -13,7 +13,7 @@ uv run python rt.py find <文本> --char 003 --scene 047   # 检索EVO台词(--c
 uv run python rt.py rowhint <场景> <函数> <行号|RemakeVoiceID>   # 行级夹逼: 邻锚区间+缺口候选+组冲突警报(现配跨组时会警告)
 uv run python rt.py findmany '[["文本","003"],..]'   # 批量检索(B类必用,一个进程跑整批; '-'读stdin)
 uv run python rt.py submitmany '[{verdict},..]'      # 提交裁定(单条也用它; 一个进程整批写入,每批10-20条; '-'读stdin) —— 唯一提交通道
-uv run python rt.py submitmap <场景> <函数> '{"行号":"OK",..}'   # 整块批量OK/UNRESOLVED(服务端回填id,已裁定自动跳过)
+uv run python rt.py submitmap <场景> <函数> '{"行号":"OK",..}'   # 整块批量OK/UNRESOLVED(服务端回填id,已裁定自动跳过; OK仅限已匹配行,未匹配行会被拒绝)
 ```
 
 ## 传参规则（批量命令通用）
@@ -41,6 +41,7 @@ uv run python rt.py submitmap <场景> <函数> '{"行号":"OK",..}'   # 整块�
 3. find 结果 sim=100 且只有 1 支 → FOUND，不需再 vid 确认。
 4. 每块工具调用预算：**行数 × 1.5 次**封顶。超了说明你在走弯路。
 5. **不要手动做工具已内置的事**：过滤检索零命中后去掉过滤重查（`unfiltered_fallback` 已自动给出）；自己从 pack 行推算锚点区间（`rowhint` 一次给出）。
+6. **未匹配行（pack 行无 vid）严禁 OK/WRONG**：OK 只表示"现配正确"，未匹配行没有现配；此类行只能是 FOUND(+correct_vid)/CANDIDATES/NO_VOICE/UNRESOLVED，走 submitmany。submitmap 混入未匹配行的 OK 会被服务端拒绝；submitmany 也会校验 id 必须存在于主表（行号≠id）。批量提交前自查一遍映射里有没有把未匹配行放进 OK 批。
 
 ## 每块流程
 
