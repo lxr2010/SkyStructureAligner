@@ -19,7 +19,7 @@ def parse_remake_ast(path):
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id in ('set_current_function', 'Label', 'Command', 'JUMP',
-                                'JumpWhenFalse', 'JumpWhenTrue'):
+                                'JumpWhenFalse', 'JumpWhenTrue', 'CallFunction'):
                 nodes.append((node.lineno, node.col_offset, 'call', node))
         elif isinstance(node, ast.Return):
             nodes.append((node.lineno, node.col_offset, 'return', node))
@@ -27,6 +27,7 @@ def parse_remake_ast(path):
 
     funcs = OrderedDict(); cur_func = None; cur_block = None
     cur_order = []; cur_end = {}
+    disp_last = {}   # 说话人ID -> 就近生效的 chr_set_display_name 显示名
     def ensure_block():
         nonlocal cur_block
         if cur_func is not None and cur_block is None:
@@ -63,6 +64,16 @@ def parse_remake_ast(path):
             cur_block = node.args[0].value
             funcs[cur_func]['blocks'].setdefault(cur_block, [])
             cur_order.append(cur_block)
+        elif name == 'CallFunction':
+            # chr_set_display_name(INT(说话人), "显示名", ...) 运行时改名时间线
+            # (动态槽位20xxx/变装/匿名 的唯一名字来源; 按出现顺序就近生效)
+            if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == 'chr_set_display_name' \
+                    and len(node.args) > 1 and isinstance(node.args[1], ast.List):
+                elts = node.args[1].elts
+                if len(elts) >= 2 and isinstance(elts[0], ast.Call) and getattr(elts[0].func, 'id', '') == 'INT' \
+                        and elts[0].args and isinstance(elts[0].args[0], ast.Constant) \
+                        and isinstance(elts[1], ast.Constant) and isinstance(elts[1].value, str):
+                    disp_last[elts[0].args[0].value] = elts[1].value
         elif name == 'Command':
             if cur_func is None or len(node.args) < 2: continue
             cmd_type = node.args[0].value
@@ -72,10 +83,15 @@ def parse_remake_ast(path):
             if cmd_type not in ok_types: continue
             if not isinstance(node.args[1], ast.List): continue
             spk = None; texts = []; rid = None
+            skind = 'unknown'
+            first = node.args[1].elts[0] if node.args[1].elts else None
+            if isinstance(first, ast.Call) and getattr(first.func, 'id', '') == 'INT' \
+                    and first.args and isinstance(first.args[0], ast.Constant):
+                skind = 'fixed'; spk = first.args[0].value
+            elif isinstance(first, ast.Call) and getattr(first.func, 'id', '') == 'LoadVar':
+                skind = 'var'   # 动态传参(公共库PARAM/VAR): 静态说话人不定
             for elt in node.args[1].elts:
-                if isinstance(elt, ast.Call) and getattr(elt.func, 'id', '') == 'INT' and elt.args and isinstance(elt.args[0], ast.Constant):
-                    if spk is None: spk = elt.args[0].value
-                elif isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                     texts.append(elt.value)
             # 内嵌语音表ID: INT(11), INT(id) 相邻对 -> t_voice.tbl 行号（Remake 自有语音文件名）
             _is_int = lambda e: isinstance(e, ast.Call) and getattr(e.func, 'id', '') == 'INT' and e.args and isinstance(e.args[0], ast.Constant)
@@ -87,7 +103,16 @@ def parse_remake_ast(path):
             text = re.sub(r'<[^>]*>', '', text)  # 去所有 <...> 控制码标记
             if text:
                 ensure_block()
-                funcs[cur_func]['blocks'][cur_block].append({'speaker': spk, 'text': text, 'rid': rid})
+                funcs[cur_func]['blocks'][cur_block].append({
+                    'speaker': spk, 'text': text, 'rid': rid,
+                    # 说话人不确定性/场景依赖标注(供s4标记与s7索引):
+                    # skind: fixed=固定ID / var=动态传参(参数或VAR,静态不定) / unknown=首参非INT
+                    # disp:  chr_set_display_name 就近生效的运行时显示名(变装/匿名/动态槽)
+                    # line:  反编译行号(查询接口坐标系)
+                    'skind': skind,
+                    'disp': disp_last.get(spk) if spk is not None else None,
+                    'line': lineno,
+                })
         elif name == 'JUMP':
             if cur_func is not None and cur_block is not None:
                 add_edge(cur_block, node.args[0].value, 'jump')

@@ -11,17 +11,70 @@
 import ast, re, glob, json, os, sys, codecs
 from collections import OrderedDict, Counter
 from paths import W, resolve
+import evo_speaker_info as speaker_info
 
 # 用法: python s2_build_evo_structure.py [fc|sc|3rd]，默认 fc
+#       python s2_build_evo_structure.py sc --prefix-stats   仅生成 EVO前缀统计(不需SoraVoiceScripts)
 GAME = (sys.argv[1].lower() if len(sys.argv) > 1 else 'fc')
 assert GAME in ('fc', 'sc', '3rd'), f'未知游戏代号: {GAME}'
+
+def build_prefix_stats(game):
+    """EVO语音前缀 -> 角色归属统计 -> data/evo_prefix_stats_{game}.json
+
+    依据(实测结论): script_data 的 character_id 中 >=0x100 为全局角色ID(0x101=エステル等),
+    0x8-0x20 为场景局部槽位, 0xFE/0x101 附近有系统标记噪音——只有全局ID可用于跨场景判归属。
+    分类: main=单全局ID且纯度>=95% | shared=多个全局ID均势(多人共用) | npc=无/弱全局ID(群众配音)
+    """
+    from collections import Counter, defaultdict
+    src = resolve(f'script_data_{game}.json')
+    if not src:
+        raise SystemExit(f'未找到 script_data_{game}.json（run.py --download-only 可获取）')
+    rows = json.load(open(src, encoding='utf-8'))
+    pre_g = defaultdict(Counter)   # prefix -> {全局char_id: n}
+    pre_n = Counter()              # prefix -> 总条数
+    for x in rows:
+        vid = x.get('voice_id') or ''
+        if len(vid) < 4 or not vid.endswith('V'):
+            continue
+        try:
+            ci = int(x.get('character_id') or '0', 16)
+        except ValueError:
+            continue
+        pre = vid[:3]
+        pre_n[pre] += 1
+        if ci >= 0x100:
+            pre_g[pre][f'0x{ci:X}'] += 1
+    stats = {}
+    for pre, n in sorted(pre_n.items()):
+        g = pre_g[pre]
+        gt = sum(g.values())
+        top = g.most_common(2)
+        if gt >= 5 and top and top[0][1] / gt >= 0.95:
+            kind = 'main'
+        elif len(top) >= 2 and top[0][1] >= 3 and top[1][1] >= max(3, top[0][1] * 0.2):
+            kind = 'shared'
+        else:
+            kind = 'npc'
+        stats[pre] = {'count': n, 'global': dict(g.most_common(6)),
+                      'global_total': gt, 'kind': kind}
+    out_p = os.path.join(W, f'evo_prefix_stats_{game}.json')
+    json.dump(stats, open(out_p, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+    kc = Counter(v['kind'] for v in stats.values())
+    print(f'EVO前缀统计[{game}] -> {os.path.basename(out_p)}: {len(stats)}个前缀 {dict(kc)}')
+    print('  shared:', [p for p, v in stats.items() if v['kind'] == 'shared'][:20])
+    return out_p
+
+if '--prefix-stats' in sys.argv:
+    build_prefix_stats(GAME)
+    sys.exit(0)
 
 def find_sora_root():
     """定位 SoraVoiceScripts 数据根目录（内含 cn.{fc,sc,3rd}/py 与 out.msg）。"""
     for cand in ('SoraVoiceScripts-zhenjian', 'sora-voice-matcher/SoraVoiceScripts'):
-        p = os.path.join(W, cand)
-        if os.path.isdir(os.path.join(p, f'cn.{GAME}', 'py')):
-            return p
+        for base in (W, os.path.dirname(os.path.dirname(W))):
+            p = os.path.join(base, cand)
+            if os.path.isdir(os.path.join(p, f'cn.{GAME}', 'py')):
+                return p
     raise SystemExit(f'未找到 SoraVoiceScripts 数据目录（需含 cn.{GAME}/py），'
                      '请在 W 下放置 SoraVoiceScripts-zhenjian 或 sora-voice-matcher/SoraVoiceScripts')
 SORA = find_sora_root()
@@ -192,9 +245,17 @@ for pyf in glob.glob(os.path.join(SORA, f'cn.{GAME}', 'py', '*.py')):
         t = talks[idx]
         segs = t['segs'] if t['segs'] else [{'voice_id': None, 'text': ''}]
         for seg in segs:
+            spk = speaker_info.resolve(t['speaker'], seg['voice_id'], GAME)
             funcs[fn]['blocks'][lab].append({
                 'talk_num': tnum, 'speaker': t['speaker'],
-                'voice_id': seg['voice_id'], 'text': seg['text']})
+                'voice_id': seg['voice_id'], 'text': seg['text'],
+                # 说话人知识库(evo_speaker_info, 由EVO日文本体验证):
+                # kind: narration/system/charid(全局角色ID)/actor_slot(场景演员槽)
+                'speaker_kind': spk['kind'],
+                'speaker_name': spk['name_jp'],
+                'speaker_name_cn': spk['name_cn'],
+                'bank': spk['bank'],
+            })
             if seg['voice_id']: n_v += 1
             else: n_nov += 1
     # 未消费的 msg 尾部（py 反编译丢失的 ChrTalk/NpcTalk）→ 游离台词伪块，保留顺序供全局索引/连续段使用
@@ -204,8 +265,11 @@ for pyf in glob.glob(os.path.join(SORA, f'cn.{GAME}', 'py', '*.py')):
         for t in talks[len(talk_seq):]:
             segs = t['segs'] if t['segs'] else [{'voice_id': None, 'text': ''}]
             for seg in segs:
+                spk = speaker_info.resolve(t['speaker'], seg['voice_id'], GAME)
                 ub.append({'talk_num': t['talk_num'], 'speaker': t['speaker'],
-                           'voice_id': seg['voice_id'], 'text': seg['text']})
+                           'voice_id': seg['voice_id'], 'text': seg['text'],
+                           'speaker_kind': spk['kind'], 'speaker_name': spk['name_jp'],
+                           'speaker_name_cn': spk['name_cn'], 'bank': spk['bank']})
                 if seg['voice_id']: n_v += 1
                 else: n_nov += 1
     for fn, f in funcs.items():

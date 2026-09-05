@@ -63,6 +63,13 @@
   .anno .reuse{color:var(--warn)}
   .anno .desc{display:inline-block;vertical-align:top;max-height:34px;overflow:hidden;cursor:zoom-in}
   .anno .desc.open{max-height:none;cursor:zoom-out;white-space:pre-wrap}
+  td.spk{min-width:130px;font-size:12px;white-space:nowrap}
+  td.spk .sr{color:var(--fg)}
+  td.spk .se{color:#9fb8d4}
+  td.spk .sep{color:var(--line);margin:0 3px}
+  td.spk.mm .sr,td.spk.mm .se{color:var(--bad)}
+  td.spk.mm::after{content:"⚠";color:var(--bad);margin-left:3px}
+  td.spk .sn{color:var(--warn);margin-left:4px;cursor:help}
   .pager{display:flex;gap:8px;align-items:center;margin:10px 0;color:var(--dim)}
   .pager button{padding:2px 10px}
   audio{width:420px;height:32px}
@@ -147,6 +154,10 @@
     <label class="chk">EVO音量 <input type="range" id="volE" min="0" max="1" step="0.02" value="0.32" style="width:80px"></label>
     <label class="chk">Remake音量 <input type="range" id="volR" min="0" max="1" step="0.02" value="0.75" style="width:80px"></label>
     <label class="chk" title="Remake 语音先查本地拆包，没有再走在线 CDN"><input type="checkbox" id="useLocal" checked>本地语音优先</label>
+    <select id="spkLang" title="说话人显示语言">
+      <option value="jp">说话人：日文</option>
+      <option value="zh">说话人：中文</option>
+    </select>
     <button id="pickVoiceDir" title="用浏览器目录选择框指定本地语音文件夹（无需服务器配置，Chromium 系浏览器支持）">📁 指定语音目录…</button>
     <span class="hint" id="voiceDirInfo"></span>
   </div>
@@ -269,6 +280,7 @@ let page = 1, sortKey = null, sortDir = 1;
 let playingIdx = -1, missingSet = new Set();   // key: "<gameId>/<name>.<ext>"
 const expandedAnnos = new Set();
 let currentIsRemake = false;
+let spkMMOnly = false;   // 仅看 R/E 说话人不一致
 
 function rowKey(r){ return (cols.id && r[cols.id]) || ("i" + r.__idx); }
 
@@ -400,6 +412,13 @@ function detectCols(header){
     mtype: find("matchtype"),
     spk:   find("speakercheck"),
     reuse: find("voicereusealert"),
+    rSpk:      find("remakespeakerid"),
+    rSpkDisp:  find("remakecharacterdisplay"),
+    rSpkDispT: find("remakecharacterdisplaytranslation"),
+    eSpkDisp:  find("evocharacterdisplay"),
+    eSpkDispT: find("evocharacterdisplaytranslation"),
+    spkNote:   find("speakernote"),
+    eSpkNote:  find("evospeakernotes"),
     anno:  find("annotation"),
     evo:   find("evoscene"),
     line:  find("remakescenascriptlineno"),
@@ -428,6 +447,13 @@ function loadCSV(text, name){
   applyFilter();
   $("#drop").style.display = "none";
   $("#tableWrap").style.display = "";
+  // 异步加载名字表等增强数据（char_names / speaker_map / 结构回退），就绪后刷新
+  (async () => {
+    await loadAux();
+    enrichSpeakers();
+    buildFilterOptions();
+    applyFilter();
+  })();
 }
 
 function readFile(f){
@@ -448,11 +474,122 @@ $("#loadDefault").addEventListener("click", async () => {
   }
 });
 
+
+
+/* ---------- 说话人数据（优先用内嵌逐行表；结构 fetch 仅作回退；char_names 渐进增强） ---------- */
+const AUX = { remake: null, spkMap: null, charNames: null, tName: null, evoName: null };
+let auxLoading = false;
+async function loadAux(){
+  if(auxLoading || AUX.remake) return;
+  auxLoading = true;
+  const paths = {
+    remake: "../data/remake_structure_sc.json",
+    spkMap: "../data/speaker_map_sc.json",
+    charNames: "../data/char_names_sc.json",
+    tName: "../data/speaker_names_t_name_sc.json",
+    tNameZh: "../data/speaker_names_t_name_zh_sc.json",
+  };
+  await Promise.all(Object.entries(paths).map(async ([k, p]) => {
+    try{
+      const r = await fetch(p, { cache: "no-store" });
+      if(r.ok) AUX[k] = await r.json();
+    }catch(e){}
+  }));
+  // evo 角色码 -> 名：speaker_map(R码->E码) 反查 + t_name(R码->名)；中日两套
+  if(AUX.spkMap && AUX.tName){
+    AUX.evoName = {};
+    AUX.evoNameZh = {};
+    for(const [rk, ek] of Object.entries(AUX.spkMap)){
+      if(!ek) continue;
+      const n = AUX.tName[rk] && AUX.tName[rk].jp;
+      const nz = AUX.tNameZh && AUX.tNameZh[rk] && AUX.tNameZh[rk].jp;
+      if(n && !AUX.evoName[ek]) AUX.evoName[ek] = n;
+      if(nz && !AUX.evoNameZh[ek]) AUX.evoNameZh[ek] = nz;
+    }
+  }
+  auxLoading = false;
+}
+function enrichSpeakers(){
+  if(rows[0]?.__spkR !== undefined) return;
+  // 新版详表：RemakeSpeakerID 直接成列（无需对齐）
+  if(cols.rSpk){
+    rows.forEach(r => { r.__spkR = r[cols.rSpk] || ""; });
+    return;
+  }
+  // 旧版详表回退：remake_structure 顺序对齐（离线验证 100% 命中）；需服务器模式加载
+  if(!AUX.remake) return;
+  const idx = {}, cur = {};
+  const K = (a, b, c) => a + "\u0001" + b + "\u0001" + c;
+  for(const [sc, funcs] of Object.entries(AUX.remake))
+    for(const [fn, f] of Object.entries(funcs))
+      for(const [lab, blk] of Object.entries(f.blocks || {}))
+        idx[K(sc.toLowerCase(), fn, lab)] = blk;
+  for(const r of rows){
+    const key = K((r[cols.script] || "").toLowerCase(), r[cols.func] || "", r[cols.block] || "");
+    const blk = idx[key] || [];
+    const txt = (r[cols.jp] || "").trim();
+    let i = cur[key] || 0, found = -1;
+    for(let j = i; j < blk.length; j++)
+      if(String(blk[j]?.text || "").trim() === txt){ found = j; break; }
+    if(found < 0)
+      for(let j = 0; j < blk.length; j++)
+        if(String(blk[j]?.text || "").trim() === txt){ found = j; break; }
+    if(found >= 0) cur[key] = found + 1;
+    r.__spkR = found >= 0 ? String(blk[found].speaker ?? "") : "";
+  }
+}
+function evoCodeOf(r){   // 行当前生效的 EVO 角色码：人工改配 > 原匹配
+  const e = edits.get(rowKey(r));
+  let v = e && e.status === "change" ? e.voice : (r[cols.voice] || "");
+  const m = String(v).replace(/^ch/i, "").match(/^(\d{3})/);
+  return m ? m[1] : "";
+}
+function remakeEvoCode(r){   // Remake 说话人码 -> EVO 角色码（speaker_map）
+  return (AUX.spkMap && r.__spkR !== undefined && AUX.spkMap[r.__spkR]) || "";
+}
+function charName(code){ return (AUX.charNames && AUX.charNames[code] && AUX.charNames[code].jpn) || ""; }
+function spkLabel(code){ return code ? (charName(code) || code) : ""; }
+let SPK_LANG = "jp";   // 说话人显示语言 jp | zh
+function rSpkName(r){   // Remake 侧名字：Display翻译列(zh) > Display列 > t_name(R码) > 映射名
+  const zh = SPK_LANG === "zh";
+  if(zh && cols.rSpkDispT && r[cols.rSpkDispT]) return r[cols.rSpkDispT];
+  if(!zh && cols.rSpkDisp && r[cols.rSpkDisp]) return r[cols.rSpkDisp];
+  const src = zh ? AUX.tNameZh : AUX.tName;
+  if(src && r.__spkR !== undefined && src[r.__spkR]) return src[r.__spkR].jp || "";
+  const ec = remakeEvoCode(r);
+  const rev = zh ? AUX.evoNameZh : AUX.evoName;
+  return ec ? (rev && rev[ec]) || charName(ec) || "" : "";
+}
+function eSpkName(r){   // EVO 侧名字：Display翻译列(zh) > char_names > 反查
+  const zh = SPK_LANG === "zh";
+  if(zh && cols.eSpkDispT && r[cols.eSpkDispT]) return r[cols.eSpkDispT];
+  if(!zh && cols.eSpkDisp && r[cols.eSpkDisp]) return r[cols.eSpkDisp];
+  const ec = evoCodeOf(r);
+  const rev = zh ? AUX.evoNameZh : AUX.evoName;
+  return ec ? charName(ec) || (rev && rev[ec]) || "" : "";
+}
+function spkNotes(r){   // 新列注记（动态传参/npc前缀等）进 tooltip
+  const parts = [];
+  if(cols.spkNote && r[cols.spkNote]) parts.push("R注: " + r[cols.spkNote]);
+  if(cols.eSpkNote && r[cols.eSpkNote]) parts.push("E注: " + r[cols.eSpkNote]);
+  return parts.join(" · ");
+}
+function spkMismatch(r){
+  const a = remakeEvoCode(r), b = evoCodeOf(r);
+  return !!(a && b && a !== b);
+}
+
 /* ---------- 过滤器：多选（勾选弹层，可搜索） ---------- */
 const MSEL_DEFS = [
   { id:"script",  label:"脚本",   get: r => (cols.script ? (r[cols.script] || "").toLowerCase() : "") },
   { id:"verdict", label:"校对判定", get: r => r.__anno?.verdict || "", order: VERDICT_ORDER },
   { id:"type",    label:"匹配类型", get: r => r[cols.mtype] || "" },
+  { id:"spkR",    label:"R说话人",  get: r => {
+      if(r.__spkR === undefined) return "";
+      const n = rSpkName(r);
+      return r.__spkR + (n ? " " + n : "");
+    } },
+  { id:"spkE",    label:"E说话人",  get: r => { const c = evoCodeOf(r); return c ? c + " " + (eSpkName(r) || c) : ""; } },
   { id:"spk",     label:"说话人检查", get: r => r[cols.spk] || "" },
 ];
 const msel = {};   // id -> { def, values:[], counts:{}, set:Set(包含集，空=全部) }
@@ -562,6 +699,8 @@ function applyFilter(){
     if(!mselPass("script", cols.script ? (r[cols.script] || "").toLowerCase() : "")) return false;
     if(!mselPass("verdict", r.__anno?.verdict || "")) return false;
     if(!mselPass("type", r[cols.mtype] || "")) return false;
+    if(!mselPass("spkR", msel.spkR ? msel.spkR.def.get(r) : "")) return false;
+    if(!mselPass("spkE", msel.spkE ? msel.spkE.def.get(r) : "")) return false;
     if(!mselPass("spk", r[cols.spk] || "")) return false;
     const vf = cols.voice ? (r[cols.voice] || "") : "";
     const rvf = cols.rvfn ? (r[cols.rvfn] || "") : "";
@@ -571,6 +710,7 @@ function applyFilter(){
     if(voice === "noneR" && rvf) return false;
     if(voice === "both" && (!vf || !rvf)) return false;
     if(alertOnly && !hasAlert(r)) return false;
+    if(spkMMOnly && !spkMismatch(r)) return false;
     const hu = $("#fHuman").value;
     if(hu === "none" && edits.has(rowKey(r))) return false;
     if(hu === "done" && !edits.has(rowKey(r))) return false;
@@ -578,7 +718,9 @@ function applyFilter(){
        (edits.get(rowKey(r)) || {}).status !== hu) return false;
     if(q){
       const hay = [vf, r[cols.jp], r[cols.cn], r[cols.oldjp], r[cols.anno], r[cols.func], r[cols.block],
-                   r[cols.rvfn], r[cols.evo], r[cols.id], r[cols.line]].filter(Boolean).join(" ").toLowerCase();
+                   r[cols.rvfn], r[cols.evo], r[cols.id], r[cols.line],
+                   rSpkName(r), eSpkName(r), spkNotes(r)]
+                   .filter(Boolean).join(" ").toLowerCase();
       if(!hay.includes(q)) return false;
     }
     return true;
@@ -644,6 +786,21 @@ function annoCell(r){
   return `<td class="anno">${html || "—"}</td>`;
 }
 
+function spkCell(r){
+  const ec = evoCodeOf(r);
+  const spkReady = r.__spkR !== undefined;
+  const rl = spkReady ? (rSpkName(r) || r.__spkR || "—") : "—";
+  const el = ec ? (eSpkName(r) || ec) : "—";
+  const mm = AUX.spkMap && spkReady && spkMismatch(r);
+  const notes = spkNotes(r);
+  const title = `Remake(${r.__spkR ?? "—"}): ${escapeHtml(rl)} / EVO(${ec || "—"}): ${escapeHtml(el)}` +
+    (notes ? `
+${escapeHtml(notes)}` : "");
+  return `<td class="spk${mm ? " mm" : ""}" title="${title}">` +
+    `<span class="sr">${escapeHtml(rl)}</span><span class="sep">｜</span><span class="se">${escapeHtml(el)}</span>` +
+    (notes ? `<span class="sn" title="${escapeHtml(notes)}">⚙</span>` : "") + `</td>`;
+}
+
 function selCell(r, gi){
   const k = rowKey(r);
   return `<td class="sel"><input type="checkbox" data-selkey="${escapeHtml(k)}" data-gi="${gi}" ${selectedKeys.has(k) ? "checked" : ""}></td>`;
@@ -665,6 +822,7 @@ function render(){
   const vc = {}; rows.forEach(r => { const v = r.__anno?.verdict; if(v) vc[v] = (vc[v] || 0) + 1; });
   const mt = {}; rows.forEach(r => { const v = r[cols.mtype] || ""; mt[v] = (mt[v] || 0) + 1; });
   const nAlert = rows.filter(hasAlert).length;
+  const nMM = AUX.spkMap ? rows.filter(spkMismatch).length : 0;
   $("#stats").innerHTML = `共 <b>${rows.length}</b> 行 · 筛选后 <b>${filtered.length}</b> 行`;
   const verdictChips = Object.entries(vc).sort((a, b) =>
       (VERDICT_ORDER.indexOf(a[0]) + 99 * !VERDICT_ORDER.includes(a[0])) - (VERDICT_ORDER.indexOf(b[0]) + 99 * !VERDICT_ORDER.includes(b[0])))
@@ -672,6 +830,7 @@ function render(){
   const typeChips = Object.entries(mt).filter(([k]) => k).sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `<span class="chip" data-type="${escapeHtml(k)}">${escapeHtml(k)} <b>${v}</b></span>`);
   $("#chips").innerHTML = verdictChips.join("") + `<span class="chip-sep">|</span>` + typeChips.join("") +
+    (nMM ? `<span class="chip-sep">|</span><span class="chip${spkMMOnly ? " on" : ""}" data-spkmm="1" title="Remake 说话人（经 speaker_map 映射）与所配 EVO 语音角色不同">说话人不一致 <b>${nMM}</b></span>` : "") +
     `<span class="chip-sep">|</span><span class="chip" data-alert="1">有告警 <b>${nAlert}</b></span>`;
   $("#chips").querySelectorAll(".chip").forEach(ch => {
     ch.onclick = () => {
@@ -681,7 +840,10 @@ function render(){
         const v = ch.dataset.verdict || ch.dataset.type;
         const d = msel[id];
         d.set = (d.set.size === 1 && d.set.has(v)) ? new Set() : new Set([v]);
+        spkMMOnly = false;
         renderMSelDOM();
+      }else if(ch.dataset.spkmm){
+        spkMMOnly = !spkMMOnly;
       }else{
         $("#fAlert").checked = !$("#fAlert").checked;
       }
@@ -697,6 +859,7 @@ function render(){
     {key: cols.jp,    label: "Remake 原文", cls: "jp"},
     {key: cols.cn,    label: "Remake 译文", cls: "cn"},
     {key: cols.oldjp, label: "EVO 原文", cls: "jp"},
+    {key: "__spk",    label: "说话人 R/E", cls: "spk"},
     {key: cols.voice, label: "语音 R/E", cls: "vf"},
     {key: cols.mtype, label: "匹配", sortable: true},
     {key: cols.spk,   label: "说话人"},
@@ -725,6 +888,7 @@ function render(){
       const v = d.key && d.key !== "__sel" && d.key !== "__human" ? (r[d.key] ?? "") : "";
       if(d.key === "__sel")      return selCell(r, gi);
       if(d.key === "__human")    return humanCell(r, gi);
+      if(d.key === "__spk")      return spkCell(r);
       if(d.key === null)          return annoCell(r);
       if(d.key === cols.voice)    return `<td class="vf">${voiceCell}</td>`;
       if(d.key === cols.mtype)    return `<td>${typeTag(v)}</td>`;
@@ -769,6 +933,15 @@ function render(){
 }
 
 ["fVoice","fAlert","fHuman"].forEach(id => $("#" + id).addEventListener("change", applyFilter));
+$("#spkLang").addEventListener("change", e => {
+  SPK_LANG = e.target.value;
+  if(msel.spkR || msel.spkE){   // 说话人过滤器的标签随语言重建，选中集清空
+    if(msel.spkR) msel.spkR.set = new Set();
+    if(msel.spkE) msel.spkE.set = new Set();
+  }
+  buildFilterOptions();
+  applyFilter();
+});
 let searchTimer;
 $("#fSearch").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(applyFilter, 250); });
 $("#reset").addEventListener("click", () => {
@@ -1176,13 +1349,13 @@ $("#edSave").addEventListener("click", () => {
   if(status === "novoice") voice = "";
   if(status === "confirm" && !voice) voice = (rowsById.get(editingKey) || {})[cols.voice] || "";
   edits.set(editingKey, { status, voice, note: $("#edNote").value.trim(), ts: new Date().toISOString() });
-  persistEdits(); updateEdCount(); render();
+  persistEdits(); updateEdCount(); buildFilterOptions(); render();
   $("#editor").style.display = "none"; editingKey = null;
 });
 $("#edDel").addEventListener("click", () => {
   if(!editingKey) return;
   edits.delete(editingKey);
-  persistEdits(); updateEdCount(); render();
+  persistEdits(); updateEdCount(); buildFilterOptions(); render();
   $("#editor").style.display = "none"; editingKey = null;
 });
 

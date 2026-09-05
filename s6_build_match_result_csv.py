@@ -17,6 +17,7 @@ from collections import defaultdict, deque, Counter
 from synonyms import normalize
 
 from paths import W, resolve, require
+import evo_speaker_info as evo_speaker
 GAME = (sys.argv[1].lower() if len(sys.argv) > 1 else 'sc')
 assert GAME == 'sc', '目前仅支持 sc'
 # 反编译目录可用命令行覆盖: python s6... sc [jp_dir] [sc_dir]（供 run.py 调用）
@@ -292,6 +293,10 @@ def row_entity_split(scene, line):
     return bool(_vli_ent.get(ek, {}).get('has_multi_shared_group'))
 
 def evo_char_display(prefix):
+    # 优先: EVO日文本体推导的说话人知识库(char-id槽位100%一致 + T_NAME + 文本鉴别)
+    jp, _cn = evo_speaker.bank_name(prefix, GAME)
+    if jp:
+        return jp
     e = char_names.get(prefix) or {}
     return e.get('jpn') or e.get('eng') or ''
 
@@ -322,14 +327,33 @@ def display_zh(jp_name, speaker_code=''):
     # 3) 日中名对照兜底
     return _JP2ZH.get(jp_name, '')
 def evo_char_display_zh(prefix, jp_name=''):
-    e = char_names.get(prefix) or {}
-    return display_zh(jp_name or (e.get('jpn') or e.get('eng') or ''))
+    # 优先: 知识库内嵌中文名(文本鉴别确认的少数角色)
+    _jp, cn = evo_speaker.bank_name(prefix, GAME)
+    if cn and not jp_name:
+        return cn
+    if not jp_name:
+        e = char_names.get(prefix) or {}
+        jp_name = e.get('jpn') or e.get('eng') or ''
+    return display_zh(jp_name)
 
 def evo_speaker_notes(prefix, char_id, scene='', line=''):
-    """EVO侧说话人备注: 前缀归属(main/shared/npc) + char_id全局/局部 + 本行实体投票分裂"""
+    """EVO侧说话人备注: 身份判定来源 + 前缀归属 + 特殊出现(演员槽乱入等) + 实体投票分裂"""
     if not prefix:
         return ''
     parts = []
+    # 说话人知识库(EVO日文本体验证): 身份与特殊出现
+    kb = evo_speaker._load(GAME) or {}
+    bi = kb.get('banks', {}).get(prefix)
+    if bi:
+        if bi.get('jpn'):
+            tag = {'charid': '身份=char_id+T_NAME', 'text_verified': '身份=文本鉴别'}.get(
+                bi.get('status'), '身份=已命名')
+            parts.append(tag)
+        else:
+            parts.append('身份=未鉴别')
+        sp_n = bi.get('special_count', 0)
+        if sp_n:
+            parts.append(f'特殊出现{sp_n}条(主角团以演员槽登场)')
     kind = prefix_stats.get(prefix, {}).get('kind')
     if kind == 'main':
         parts.append('main=单角色配音')

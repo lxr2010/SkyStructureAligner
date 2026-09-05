@@ -74,7 +74,7 @@ for vid, vs in by_id.items():
     priority = {'WRONG': 0, 'FOUND': 1, 'SUSPECT': 2, 'CANDIDATES': 3, 'NO_VOICE': 3.5, 'UNRESOLVED': 4, 'OK': 5}
     v = sorted(vs, key=lambda x: priority.get(x['verdict'], 9))[0]
     tag = f"自动校对[{v['verdict']}]"
-    anno_add = f"{tag} {v.get('reason', '')[:120]}"
+    anno_add = f"{tag} {v.get('reason', '')[:500]}"
 
     if v['verdict'] == 'OK':
         applied['OK'] += 1

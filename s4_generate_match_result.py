@@ -12,6 +12,7 @@ from collections import defaultdict, Counter
 from rapidfuzz import fuzz
 from synonyms import normalize
 from paths import W, resolve, require
+import evo_speaker_info as evo_speaker
 
 GAME = (sys.argv[1].lower() if len(sys.argv) > 1 else 'fc')
 assert GAME in ('fc', 'sc'), f'未知游戏代号: {GAME}'
@@ -37,6 +38,15 @@ def rem_char(spk, scene=None):
         sc_map = sm_scene.get(scene)
         if sc_map and s in sc_map: return sc_map[s]
     return sm.get(s)
+
+def bank_note(prefixes):
+    """语音角色码 -> '001=エステル;...'（来自EVO日文本体知识库, 未鉴别的不标）"""
+    parts = []
+    for p in sorted({p[:3] for p in prefixes if p}):
+        jp, _cn = evo_speaker.bank_name(p, GAME)
+        if jp:
+            parts.append(f'{p}={jp}')
+    return ';'.join(parts)
 
 def clean_final(text):
     """normalize + 仅浊点归一化（う゛/ヴ → う），不做标点/emoji 过度归一化"""
@@ -454,6 +464,9 @@ for rblk, segs in block_segs.items():
                 if others:
                     spk_match = f'同文本异角色({",".join(others[:4])})'
             eblk = vid_to_evoblk.get(uniq[0]) if uniq else None
+            _bn = bank_note(uniq)
+            if _bn:
+                spk_note = (spk_note + '; ' if spk_note else '') + 'Evo身份:' + _bn
             out.append((sc, fn, lab, text, spk, char, uniq[0] if uniq else '', '|'.join(uniq), ty, '|'.join(src), spk_match,
                         eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', rid, spk_note, disp or ''))
 
@@ -602,7 +615,7 @@ for (sc, fn, lab), idxs in blk_rows.items():
             char_i = out[i][5]
             sm_ = out[i][10]
             if char_i and v[:3] != char_i:
-                sm_ = f'链内角色不符(语音角色{v[:3]})'
+                sm_ = f'链内角色不符(语音角色{v[:3]}={evo_speaker.bank_name(v[:3], GAME)[0] or "?"})'
                 run_stat['链内角色不符'] += 1
             out[i] = (*out[i][:6], v, out[i][7], '唯一', src_tag, sm_,
                       eblk[0] if eblk else '', eblk[1] if eblk else '', eblk[2] if eblk else '', out[i][14], out[i][15], out[i][16])
@@ -633,7 +646,7 @@ for (sc, fn, lab), idxs in blk_rows.items():
             char_i = out[i][5]
             sm_ = out[i][10]
             if char_i and bv[:3] != char_i:
-                sm_ = f'链内角色不符(语音角色{bv[:3]})'
+                sm_ = f'链内角色不符(语音角色{bv[:3]}={evo_speaker.bank_name(bv[:3], GAME)[0] or "?"})'
                 run_stat['链内角色不符'] += 1
             eblk = vid_to_evoblk.get(bv)
             out[i] = (*out[i][:6], bv, out[i][7], '唯一', 'script|块内连续段·模糊', sm_,

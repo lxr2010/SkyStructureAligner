@@ -45,6 +45,8 @@ for sc, funcs in remake.items():
     for fn, f in funcs.items():
         for lab, blk in f['blocks'].items():
             for t in blk:
+                if t.get('speaker') is None:
+                    continue   # skind=var/unknown: 说话人静态不定, 不参与锚点投票(s1已标注)
                 n = normalize(tag(t.get('text') or ''))
                 if n and n in en and len(en[n]) == 1:
                     char = next(iter(en[n]))
@@ -64,7 +66,7 @@ for spk, c in votes.items():
 scene_map = {}
 n_scene = 0
 for (sc, spk), c in scene_votes.items():
-    if str(spk) in derived or int(spk) == 65535:
+    if spk is None or str(spk) in derived or int(spk) == 65535:
         continue
     char, n = c.most_common(1)[0]
     if n >= 3 and n / sum(c.values()) >= 0.8:

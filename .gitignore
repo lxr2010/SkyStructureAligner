@@ -24,3 +24,6 @@ review_agent/stats/
 .codex/
 review_agent/findmany*.json
 review_agent/discovery_mining
+
+# 数据备份(大目录, 不入git)
+data_backup_*/

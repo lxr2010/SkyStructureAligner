@@ -27,13 +27,30 @@ uv run python run.py --game sc --py-dir <日文反编译py目录> [--py-dir-sc <
 
 | 文件 | 内容 |
 |------|------|
-| `match_result_sc_detailed.csv` | 16+9 列详表：RemakeVoiceID（合成号，默认100000起，`--new-id-start N` 可覆盖，行级唯一）/ RemakeOriginalVoiceID（原始内嵌语音表ID，6,194行）/ 场景行号 / RemakeFunction+Block / Old\*（EVO语音ID/角色/台词）/ Evo\* 结构定位 / 中文翻译 / SpeakerCheck / Annotation |
+| `match_result_sc_detailed.csv` | 16+9 列详表：RemakeVoiceID（合成号，默认100000起，`--new-id-start N` 可覆盖，行级唯一）/ RemakeOriginalVoiceID（原始内嵌语音表ID，6,194行）/ 场景行号 / RemakeFunction+Block / Old\*（EVO语音ID/角色/台词）/ Evo\* 结构定位 / 中文翻译 / SpeakerCheck / Annotation / 说话人四列：**RemakeSpeakerID**（说话人ID）、**RemakeCharacterDisplay**（运行时显示名，变装/匿名，791行）、**EvoCharacterDisplay**（EVO角色名，char_names）、**EvoSpeakerNotes**（前缀归属 main/shared/npc + char_id全局/局部 + 本行实体投票分裂实锤） |
 | `my_match_result_sc.csv` | 匹配中间结果（含 Candidates 全量、Source 分层来源） |
 | `speaker_review_sc.csv` | 说话人审查长表：一行一候选，含被拒候选/EVO结构/编号解释/Verdict 空列 |
 | `voice_reuse_review_sc.csv` | 同源语音复用冲突表：同 RemakeOriginalVoiceID 的多行匹配到不同 EVO 语音（多为动物音效族/差分），附全组成员对照与 Verdict 空列 |
 | `speaker_map_sc.json` / `speaker_map_scene_sc.json` | 说话人映射（全局 + 场景条件） |
 
 仅下载数据资产：`uv run python run.py --game sc --download-only`
+
+## 说话人/语音统一查询（s7 + voice_lookup_query）
+
+回答"Remake 脚本某行的语音是什么情况"：说话人（含 **VAR 动态传参/引擎回调/动态槽**
+等不确定性）、运行时显示名（变装/匿名，日/中双语）、语音号、EVO 匹配
+（前缀×角色ID，标注 **多人共用前缀** 与 **场景依赖**）。详见 [docs/voice_lookup.md](docs/voice_lookup.md)。
+
+```bash
+uv run python s7_build_voice_lookup.py --game sc --py-dir py/ [--py-dir-sc py_sc/] [--game-dir "<游戏目录>"]
+uv run python voice_lookup_query.py mp2000_ev 62412        # 行查询
+uv run python voice_lookup_query.py --entity "20700|女性の声"   # 实体查询(含per-scene EVO映射)
+uv run python voice_lookup_query.py --shared               # EVO多人共用前缀
+```
+
+配套管线改动：s1 结构带说话人不确定性/显示名/行号；s2 `--prefix-stats` EVO前缀归属
+（main/shared/npc）；s4 匹配细化「说话人不定·VAR」「不对应·共用前缀」并输出 SpeakerNote
+（s6 详表/审查表透传）；review_agent 增加 `rt.py speaker` 说话人辨析命令。
 
 ## Remake 语音表 t_voice（可选，RemakeVoiceFilename 列）
 

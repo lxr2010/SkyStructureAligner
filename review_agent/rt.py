@@ -1,19 +1,28 @@
-#!/usr/bin/env python3
-"""校对Agent专用工具套组(rt)——为弱模型设计：一条命令一个干净JSON，不碰文件编码、不写代码。
+"""校对Agent工具套组(rt) v2 —— 四组命令, 一条命令一个干净JSON
 
-用法:
-  uv run python rt.py todo [--n 5]                    # 待办块队列(按verdicts过滤,仅未完成)
-  uv run python rt.py claim <代理ID> [场景 函数]        # 直接领任务包: 认领待办块+返回工作包(租约防撞块)
-  uv run python rt.py release <场景> <函数>            # 释放认领(代理异常中断时用)
-  uv run python rt.py pack <场景> <函数>               # 工作包(块内全部行, 行内含已匹配vid的evo信息)
-  uv run python rt.py vid <语音ID10位>                # 语音详情: 结构定位+msg原文行+被引用处
-  uv run python rt.py find <文本> [--char 003] [--scene 047] [--evoscene T0131_1] [--limit 8]   # 归一化检索EVO台词(--scene=语音场景数字3位即vid第4-6位; --evoscene=EVO结构场景名; 两者不同体系)
-  uv run python rt.py findmany '<[[文本,角色],..]>' | - # 批量检索(一个进程跑整批, 消灭重复数据加载)
-  uv run python rt.py runcheck <场景> <函数>           # 块级自动体检: 序号连续性/跳场景/复用/文本相似
-  uv run python rt.py submit '<verdict JSON>'          # 校验并追加裁定到 review_pack/verdicts.jsonl
-  uv run python rt.py submitmany '[{verdict},..]' | -  # 批量提交(一个进程整批写入, 单次加锁)
-  uv run python rt.py submitmap <场景> <函数> '{"行号":"OK",..}' | -  # 整块批量OK/UNRESOLVED(服务端回填id,已裁定自动跳过)
-  uv run python rt.py autook                          # 批量自检: 全部待办块中通过确定性体检的整块自动OK
+【领包 / 提交】
+  claim <代理ID> [场景 函数]     领块+工作包(租约防撞; 无场景参数=领队首待办)
+  pack <场景> <函数>             重取工作包(不占租约, 丢包时用)
+  release <场景> <函数>          异常中断时释放租约
+  submitmap <场景> <函数> '<{"行号":"OK",..}>'|-    整块 OK/UNRESOLVED(服务端回填id, 已裁定跳过)
+  submitmany '<[裁定,..]>'|-                       提交裁定(单条也用它; 唯一提交通道)
+
+【证据四件套】标准流程: runcheck 发现 issue → vid 查证 → findmany 检索 → rowhint 夹逼
+  runcheck <场景> <函数>         块体检: 序号断裂/倒序/跨场景/take缺口候选/文本低相似/复用分歧
+  vid <10位语音ID>               take档案: 结构定位/官方复用structure_refs/补录文本/AT9存在性
+                                 (matched_by_pipeline是我方结果=循环证据, 勿当复用依据)
+  find <文本> [--char 003] [--scene 047|T0700] [--evoscene T0131_1] [--limit 8]
+                                 归一化检索(带过滤零命中自动无过滤兜底; --scene 兼容两种格式)
+  findmany '<[["文本","003"],..]>'|-               批量检索(整批一个进程, 优先用这个)
+  rowhint <场景> <函数> <行号|ID>  行级夹逼: 邻锚区间+缺口候选+组冲突警报
+
+【说话人】
+  speaker <场景> <行号>          行级辨析(说话人/显示名/EVO匹配/不确定性)
+  speaker --entity <ID|显示名>   实体级 per-scene 前缀映射;  --list <ID> 列实体
+  bank <三位码|完整vid>          bank 全场景角色档案(身份/槽位/显示名/特殊出现)
+
+【运营】(主智能体/人工用, 校对代理勿用)
+  autook                         全库确定性自检, 通过块整块自动写入OK
 """
 import csv, json, os, re, sys
 from collections import defaultdict
@@ -24,20 +33,28 @@ except Exception:
     pass
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from paths import W, resolve
+import evo_speaker_info as espeaker
 
 GAME = 'sc'
 SUF = '_sc'
 _here = os.path.dirname(os.path.abspath(__file__))
-_det = resolve('match_result_sc_detailed.csv')
-det = list(csv.DictReader(open(_det, encoding='utf-8')))
-evo = json.load(open(resolve(f'evo_structure{SUF}.json'), encoding='utf-8'))
-remake_st = json.load(open(resolve(f'remake_structure{SUF}.json'), encoding='utf-8'))
-SORA_CANDS = [os.path.join(W, 'SoraVoiceScripts-zhenjian', 'cn.sc'),
-              os.path.join(W, 'sora-voice-matcher', 'SoraVoiceScripts', 'cn.sc')]
-SORA = next((d for d in SORA_CANDS if os.path.isdir(d)), None)
+_det_p = resolve('match_result_sc_detailed.csv')
+det = None          # 懒加载: 仅需账本的命令使用
+def _det():
+    global det
+    if det is None:
+        det = list(csv.DictReader(open(_det_p, encoding='utf-8')))
+    return det
+
+remake_st = None    # 懒加载: 仅 pack 使用
+def _remake_st():
+    global remake_st
+    if remake_st is None:
+        remake_st = json.load(open(resolve(f'remake_structure{SUF}.json'), encoding='utf-8'))
+    return remake_st
 
 # ---------- 索引(带pickle缓存: 构建约4s, unpickle约0.2s) ----------
-_CACHE_VER = 3   # 代码变更(如索引结构/归一化规则)时递增
+_CACHE_VER = 6   # 代码变更(如索引结构/归一化规则)时递增
 _CACHE_F = os.path.join(_here, 'review_pack', f'.rt_cache_v{_CACHE_VER}.pkl')
 
 def _src_newer_than_cache():
@@ -64,6 +81,8 @@ vid_idx = {}          # vid -> {scene,func,block,talk_num,speaker,text}
 norm_list = []        # [(norm, vid_or_None, scene, func, text, voiced)]
 vid_pool = {}         # (录音组, take) -> {vid: text}  [rowhint 区间候选]
 unvoiced_norms = set()  # 无语音行的norm集合(用于do_find快速区分)
+vid_occ = defaultdict(list)   # vid -> ['scene/func', ...]  结构内出现处(官方复用证据, 非循环)
+at9_set = set()               # AT9 音频文件清单(bare vid)——未引用录音存在性
 
 _use_cache = os.path.exists(_CACHE_F) and not _src_newer_than_cache()
 if not _use_cache and _wait_for_building_cache():
@@ -71,19 +90,26 @@ if not _use_cache and _wait_for_building_cache():
 if _use_cache:
     import pickle
     with open(_CACHE_F, 'rb') as _f:
-        vid_idx, norm_list, unvoiced_norms, extra, BLOCK_KEYS = pickle.load(_f)
+        vid_idx, norm_list, unvoiced_norms, extra, BLOCK_KEYS, vid_occ, at9_set, det_slim = pickle.load(_f)
     from synonyms import normalize as _norm
     def cnorm(t):
         return re.sub(r'\s+', '', _norm(t).replace('\u3046\u3099', 'う').replace('ヴ', 'う')) if t else ''
 else:
+    evo = json.load(open(resolve(f'evo_structure{SUF}.json'), encoding='utf-8'))
     for _sc, _fns in evo.items():
         for _fn, _f in _fns.items():
             for _lab, _blk in _f['blocks'].items():
                 for t in _blk:
                     if t.get('voice_id'):
                         vid = t['voice_id']
+                        vid_occ[vid].append(f'{_sc}/{_fn}')
                         vid_idx[vid] = {'scene': _sc, 'func': _fn, 'block': _lab,
-                                        'talk_num': t['talk_num'], 'speaker': t['speaker'], 'text': t['text']}
+                                        'talk_num': t['talk_num'], 'speaker': t['speaker'], 'text': t['text'],
+                                        'msg_id': t.get('msg_id'), 'cast': t.get('cast'),
+                                        'speaker_kind': t.get('speaker_kind'),
+                                        'speaker_name': t.get('speaker_name'),
+                                        'speaker_name_cn': t.get('speaker_name_cn'),
+                                        'bank': t.get('bank') or vid[:3]}
     try:
         from synonyms import normalize as _norm
         _norm('')
@@ -98,7 +124,7 @@ else:
             _v = _v[:-1] if _v.endswith('V') else _v
             if _v and _v not in vid_idx and _it.get('text'):
                 extra[_v] = _it['text']
-    BLOCK_KEYS = {(r['RemakeScenaScriptFilename'], r['RemakeFunction']) for r in det}
+    BLOCK_KEYS = {(r['RemakeScenaScriptFilename'], r['RemakeFunction']) for r in _det()}
     def cnorm(t):
         return re.sub(r'\s+', '', _norm(t).replace('\u3046\u3099', 'う').replace('ヴ', 'う')) if t else ''
     for vid, info in vid_idx.items():
@@ -115,43 +141,28 @@ else:
                         if _n and _n not in _voiced_norms:
                             norm_list.append((_n, None, _sc, _fn, t['text'], False))
                             unvoiced_norms.add(_n)
+    # AT9 文件清单: 未引用录音(缺口take)存在性的唯一证据
+    for _p in (resolve('at9_names_sc.csv'), os.path.join(W, 'at9_names_sc.csv')):
+        if _p and os.path.isfile(_p):
+            with open(_p, encoding='utf-8-sig') as _f:
+                for _ln in _f:
+                    _v = _ln.strip().strip('"').rstrip('Vv').strip()
+                    if len(_v) == 10 and _v.isdigit():
+                        at9_set.add(_v)
+            break
     import pickle
     os.makedirs(os.path.dirname(_CACHE_F), exist_ok=True)
     _tmp = _CACHE_F + f'.tmp{os.getpid()}'
     with open(_tmp, 'wb') as _f:
-        pickle.dump((vid_idx, norm_list, unvoiced_norms, extra, BLOCK_KEYS), _f, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump((vid_idx, norm_list, unvoiced_norms, extra, BLOCK_KEYS, vid_occ, at9_set,
+                 [(r['RemakeScenaScriptFilename'], r['RemakeScenaScriptLineno'], r['OldVoiceFilename'][2:-1])
+                  for r in _det() if r.get('OldVoiceFilename')]), _f, protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(_tmp, _CACHE_F)   # 原子改名, 防并发读到半写文件
 
 # (录音组, take序号) -> {vid: text}: rowhint 区间候选(派生自 norm_list, 不入缓存)
 for _e in norm_list:
     if _e[1] and _e[5]:
         vid_pool.setdefault((_e[1][3:6], _e[1][6:]), {})[_e[1]] = _e[4]
-
-_msg_cache = {}
-def msg_line(vid):
-    """在 out.msg 中定位 vid 的原文行(字节级安全, CP932)"""
-    scene = vid_idx.get(vid, {}).get('scene', '')
-    base = re.sub(r'_\d+$', '', scene)
-    for name in (scene, base):
-        mp = os.path.join(SORA, 'out.msg', name + '.txt') if SORA else None
-        if not (mp and os.path.exists(mp)):
-            continue
-        if name not in _msg_cache:
-            raw = open(mp, 'rb').read()
-            idx = []
-            i = 0
-            while True:
-                i = raw.find(vid.encode(), i)
-                if i < 0: break
-                ls = raw.rfind(b'\n', 0, i) + 1
-                le = raw.find(b'\n', i)
-                idx.append(raw[ls:le if le > 0 else len(raw)].decode('cp932', errors='replace').strip())
-                i += 1
-            _msg_cache[name] = idx
-        for ln in _msg_cache.get(name, []):
-            if vid in ln:
-                return {'file': name + '.txt', 'line': ln[:200]}
-    return None
 
 def out(msg):
     print(json.dumps(msg, ensure_ascii=False, indent=1))
@@ -211,7 +222,7 @@ def _ranked_pending():
     """返回 [(key,(total,matched,flags,pending)),..] 仅含未完成块, 排序同todo优先级"""
     done = _done_ids()
     todo = defaultdict(lambda: [0, 0, 0, 0])
-    for r in det:
+    for r in _det():
         k = (r['RemakeScenaScriptFilename'], r['RemakeFunction'])
         todo[k][0] += 1
         if r['OldVoiceFilename']: todo[k][1] += 1
@@ -220,13 +231,6 @@ def _ranked_pending():
     return sorted(((k, v) for k, v in todo.items() if v[3] > 0),
                   key=lambda x: (x[1][2] == 0, x[1][1] == 0, -x[1][2]))
 
-def cmd_todo(n=5):
-    ranked = _ranked_pending()
-    rows = [{'scene': s, 'function': f, 'total': t, 'matched': m, 'flags': a, 'pending': p}
-            for (s, f), (t, m, a, p) in ranked[:n]]
-    out({'todo': rows, 'pending_blocks': len(ranked),
-         '说明': '仅含未完成块(已按verdicts.jsonl过滤); flags>0优先; matched=0为全未匹配块(B类)'})
-
 def cmd_claim(agent, scene=None, func=None):
     """直接领任务包: 认领待办块(租约防并发撞块)并返回精简工作包。
     claim <代理ID>            -> 自动取队列首块
@@ -234,7 +238,7 @@ def cmd_claim(agent, scene=None, func=None):
     import time
     res = {}
     if scene and func and (scene, func) not in BLOCK_KEYS:
-        out({'error': f'块不存在: {scene}/{func} (检查场景/函数名拼写)', 'hint': '用 todo 查看有效块名'}); return
+        out({'error': f'块不存在: {scene}/{func} (检查场景/函数名拼写)', 'hint': '无参 claim 可自动领队首块'}); return
     def fn(claims):
         now = time.time()
         claims = {k: v for k, v in claims.items() if now - v.get('ts', 0) < LEASE_STALE}
@@ -286,11 +290,11 @@ def _voice_text(v):
 
 def _get_pack(scene, func, done):
     """精简工作包: 行内直接合并已匹配vid的EVO信息, 剔除冗余列(约为旧版体积1/5)"""
-    rows = [r for r in det if r['RemakeScenaScriptFilename'] == scene and r['RemakeFunction'] == func]
+    rows = [r for r in _det() if r['RemakeScenaScriptFilename'] == scene and r['RemakeFunction'] == func]
     if not rows:
         return None
     rseq = []
-    for fn, f in remake_st.get(scene, {}).items():
+    for fn, f in _remake_st().get(scene, {}).items():
         for lab, blk in f['blocks'].items():
             for t in blk:
                 rseq.append((t['text'], t.get('speaker'), t.get('rid')))
@@ -321,6 +325,18 @@ def _get_pack(scene, func, done):
                 item['evo_func'] = info['func']
                 item['evo_block'] = info.get('block', '')
                 item['talk_num'] = info.get('talk_num')
+                item['evo_speaker'] = info.get('speaker')
+                item['evo_speaker_kind'] = info.get('speaker_kind')
+                if info.get('speaker_name'):
+                    item['evo_speaker_name'] = info['speaker_name']
+                _bjp, _bcn = espeaker.bank_name(vv[:3], GAME)
+                if _bjp:
+                    item['evo_bank_name'] = _bjp
+                if _bcn:
+                    item['evo_bank_name_cn'] = _bcn
+                _spn = espeaker.special_count(vv[:3], GAME)
+                if _spn:
+                    item['evo_special'] = _spn
             elif vv in extra:
                 item['evo_text'] = extra[vv]
                 item['evo_scene'] = 'additional'
@@ -335,7 +351,7 @@ def _get_pack(scene, func, done):
             'matched': sum(1 for r in rows if r['OldVoiceFilename']),
             'pending': sum(1 for r in rows if str(r['RemakeVoiceID']) not in done),
             'rows': slim,
-            '字段说明': 'id=裁定主键; line=Remake行号; spk=remake侧说话人码(参考,勿作检索过滤); evo_char=旧角色码(EVO三位,findmany过滤/说话人核对用); rvfile=remake语音文件名; rblock/evo_block=新旧块标签; vid=已匹配语音ID(evo_seq=录音序号, evo_text/scene/func/talk_num=EVO侧定位); rrid/orig_rid=复用组键; done=true已有裁定(跳过)'}
+            '字段说明': 'id=裁定主键; line=Remake行号; spk=remake侧说话人码(参考,勿作检索过滤); evo_char=旧角色码(EVO三位,findmany过滤/说话人核对用); rvfile=remake语音文件名; rblock/evo_block=新旧块标签; vid=已匹配语音ID(evo_seq=录音序号, evo_text/scene/func/talk_num=EVO侧定位); evo_speaker/kind=EVO侧speaker与语义(charid=全局角色ID/actor_slot=场景演员槽/narration/system); evo_speaker_name=EVO说话人日文名(T_NAME/知识库); evo_bank_name(_cn)=语音bank角色名(中); evo_special>0=该角色有演员槽乱入记录; rrid/orig_rid=复用组键; done=true已有裁定(跳过)'}
 
 def cmd_pack(scene, func):
     pack = _get_pack(scene, func, _done_ids())
@@ -345,15 +361,29 @@ def cmd_pack(scene, func):
 
 def cmd_vid(vid):
     vid = vid.lstrip('ch').rstrip('V')
-    refs = [f"{r['RemakeScenaScriptFilename']}:{r['RemakeScenaScriptLineno']}" for r in det if r['OldVoiceFilename'] and r['OldVoiceFilename'][2:-1] == vid]
+    refs = [f"{f}:{ln}" for f, ln, v in det_slim if v == vid]
+    _bjp, _bcn = espeaker.bank_name(vid[:3], GAME)
+    struct_refs = vid_occ.get(vid, [])
     base = {'vid': vid, 'char': vid[:3], 'voice_scene': vid[3:6], 'seq': vid[6:],
-            'referenced_by_remake': refs[:5], 'msg': msg_line(vid)}
+            'bank_name': _bjp, 'bank_name_cn': _bcn,
+            'bank_special_count': espeaker.special_count(vid[:3], GAME),
+            'matched_by_pipeline': refs[:5],
+            '_warn_matched_by_pipeline': '此字段=我方匹配结果(循环证据, 不能当官方复用依据)',
+            'structure_refs': struct_refs,
+            'official_reuse': len(struct_refs) > 1,
+            'at9_exists': vid in at9_set}
     info = vid_idx.get(vid)
     if info:
         out({'vid': vid, 'found': True, 'source': 'evo', **info, **base}); return
+
     if vid in extra:
-        out({'vid': vid, 'found': True, 'source': 'additional', 'text': extra[vid], **base}); return
-    out({'vid': vid, 'found': False, 'note': '不在evo_structure也不在additional补充表——可能是script_data或新录音'})
+        base.pop('_warn_matched_by_pipeline', None)
+        out({'vid': vid, 'found': True, 'source': 'additional', 'text': extra[vid],
+             'unreferenced_take': True, **base,
+             'note': '未被EVO脚本引用的录音(补录表)——若行位缺口吻合可作 gap-fill 候选, 须核对文本相似度'}); return
+    hint = ('AT9音频存在但结构/补录均无引用——未引用录音, 行位缺口吻合时可听辨裁定'
+            if vid in at9_set else '不在evo_structure/补录表/AT9清单——可能不存在或为其他游戏')
+    out({'vid': vid, 'found': False, 'unreferenced_take': vid in at9_set, 'note': hint})
 
 def do_find(text, char=None, scene=None, limit=8, evoscene=None):
     from rapidfuzz import fuzz
@@ -362,6 +392,8 @@ def do_find(text, char=None, scene=None, limit=8, evoscene=None):
     errs = []
     if not n or len(n) < 2:
         errs.append(f'查询文本归一化后不足2字符: {text!r}')
+    if scene is not None and isinstance(scene, str) and re.match(r'^[A-Za-z]', scene):
+        evoscene = scene; scene = None   # 容错: --scene T0700 视为 --evoscene
     if char is not None and (not isinstance(char, str) or not re.fullmatch(r'\d{3}', str(char))):
         errs.append(f'--char 须为3位数字角色码(vid前3位, 如001), 收到: {char!r}')
     if scene is not None and (not isinstance(scene, str) or not re.fullmatch(r'\d{3}', str(scene))):
@@ -416,7 +448,7 @@ def cmd_find(text, char=None, scene=None, limit=8, evoscene=None):
     out(r)
 
 USAGES = {
-    'submit': "submit '<JSON>'（单条裁定, JSON整体用单引号包裹）。例: {\"RemakeVoiceID\":\"102345\",\"task\":\"A\",\"verdict\":\"OK\",\"reason\":\"文本全等\"}",
+    'submitmany-single': "单条裁定也用 submitmany: submitmany '[{\"RemakeVoiceID\":\"102345\",\"task\":\"A\",\"verdict\":\"OK\",\"reason\":\"文本全等\"}]'",
     'submitmany': "submitmany '<JSON数组>'（外层单引号）或 submitmany - 后接 heredoc(<<'EOF' ... EOF)。例: [{\"RemakeVoiceID\":\"102345\",\"task\":\"A\",\"verdict\":\"OK\",\"reason\":\"文本全等\"}]",
     'submitmap': "submitmap <场景> <函数> '<映射JSON>' 或 submitmap <场景> <函数> - 后接 heredoc。服务端回填id、自动跳过已裁定行; 仅OK/UNRESOLVED, 特殊裁定走submitmany。例: {\"44548\":\"OK\",\"44549\":\"UNRESOLVED\"}",
     'findmany': "findmany '<JSON数组>' 或 findmany - 后接 heredoc。元素: \"文本\" 或 [\"文本\",\"角色码\",\"语音场景3位\",\"EVO场景名\"]（后三项可选）。角色码=vid前3位; 语音场景=vid第4-6位数字(如047); EVO场景名=如T0131_1(与--evoscene同义)。例: [[\"おはよう\",\"001\"],[\"……\",null,\"047\"]]",
@@ -472,7 +504,7 @@ def cmd_findmany(raw):
          'note': 'sim=100为归一化全等; 元素[文本,char,scene,evoscene]均可选: char=角色码3位, scene=语音场景数字3位(vid第4-6位), evoscene=EVO结构场景名(如T0131_1); 结果hits的scene字段是EVO结构场景名'})
 
 def cmd_runcheck(scene, func):
-    rows = [r for r in det if r['RemakeScenaScriptFilename'] == scene and r['RemakeFunction'] == func]
+    rows = [r for r in _det() if r['RemakeScenaScriptFilename'] == scene and r['RemakeFunction'] == func]
     matched = [r for r in rows if r['OldVoiceFilename']]
     issues = []
     vids = [(r, r['OldVoiceFilename'][2:-1]) for r in matched]
@@ -487,9 +519,36 @@ def cmd_runcheck(scene, func):
             elif gap > 30:
                 issues.append({'type': '序号断裂', 'at': vids[i][0]['RemakeScenaScriptLineno'],
                                'a': a, 'b': b, 'gap': gap, 'note': '同场景跳号过大, 检查中间是否漏配'})
+            elif gap >= 2:
+                # take缺口: 断口序号若在补录表/结构池中, 附候选(缺口填回须核对文本相似度)
+                for t in range(int(a[6:]) + 1, int(b[6:])):
+                    tk = f'{t:04d}'
+                    for gv, gtxt in vid_pool.get((a[3:6], tk), {}).items():
+                        issues.append({'type': 'take缺口候选', 'at': vids[i][0]['RemakeScenaScriptLineno'],
+                                       'a': a, 'b': b, 'gap_vid': gv,
+                                       'gap_text': (gtxt or '')[:36], 'gap_source': '补录' if gv in extra else '结构',
+                                       'note': '断口序号存在录音——若缺口位台词与gap_text相似可考虑改配, 须vid查证'})
+                        break
         elif a[3:6] != b[3:6]:
             issues.append({'type': '跨场景', 'at': vids[i][0]['RemakeScenaScriptLineno'],
                            'a': a, 'b': b, 'note': '相邻行跳到另一EVO场景(确认是否官方复用/事件切换)'})
+    # 夹心跨组: 行i的组与前后邻行组都不同, 且前后邻同组、序号递增 → 前后邻之间是缺口(经典缺口异常位)
+    for i in range(1, len(vids) - 1):
+        _p, _c, _n = vids[i-1][1], vids[i][1], vids[i+1][1]
+        if _p[3:6] == _n[3:6] and _c[3:6] != _p[3:6] and int(_n[6:]) > int(_p[6:]):
+            _ta, _tb = int(_p[6:]), int(_n[6:])
+            _fired = False
+            for _t in range(_ta + 1, _tb):
+                _tk = f'{_t:04d}'
+                for _gv, _gtxt in vid_pool.get((_p[3:6], _tk), {}).items():
+                    issues.append({'type': 'take缺口候选', 'at': vids[i][0]['RemakeScenaScriptLineno'],
+                                   'cur': _c, 'nbr_a': _p, 'nbr_b': _n, 'gap_vid': _gv,
+                                   'gap_text': (_gtxt or '')[:36],
+                                   'gap_source': '补录' if _gv in extra else '结构',
+                                   'note': '现配为跨组支且邻行序号在此断开——缺口录音存在, vid查证文本相似度后裁定'})
+                    _fired = True
+                    break
+                if _fired: break
     # 文本相似
     from rapidfuzz import fuzz
     for r in matched:
@@ -514,88 +573,49 @@ def cmd_runcheck(scene, func):
     out({'scene': scene, 'function': func, 'checked': len(matched), 'issues': issues,
          'note': 'issues为空=体检通过; 逐条按任务书规则判定'})
 
-def cmd_autocheck(scene, func):
-    """确定性预检: 全匹配+体检零异常+文本全等+无标记 -> 直接批量OK(与Agent裁定等价, 零token)
-    返回 auto_ok=True 或未过原因列表"""
-    rows = [r for r in det if r['RemakeScenaScriptFilename'] == scene and r['RemakeFunction'] == func]
-    if not rows:
-        out({'error': f'未找到 {scene}/{func}'}); return
-    reasons = []
-    unmatched = [r for r in rows if not r['OldVoiceFilename']]
-    if unmatched:
-        reasons.append(f'{len(unmatched)}行未匹配(需LLM寻配)')
-    flagged = [r for r in rows if r['SpeakerCheck'] or r['VoiceReuseAlert']]
-    if flagged:
-        reasons.append(f'{len(flagged)}行带审查标记')
-    # 文本全等(在evo结构或补充表中的)
-    from rapidfuzz import fuzz
-    for r in rows:
-        v = r['OldVoiceFilename'][2:-1] if r['OldVoiceFilename'].startswith('ch') else r['OldVoiceFilename']
-        vt = _voice_text(v)
-        if vt:
-            sim = fuzz.ratio(cnorm(r['RemakeVoiceText']), cnorm(vt[0]))
-            n = cnorm(r['RemakeVoiceText'])
-            content_len = len(re.sub(r'[^0-9A-Za-zぁ-んァ-ヶ一-龯]', '', n))
-            if sim < 100 and not (content_len >= 8 and sim >= 90):
-                reasons.append(f"行{r['RemakeScenaScriptLineno']}文本相似{sim:.0f}低于阈值")
-                break
-    # runcheck复用(只取issues, 不重复submit)
-    import io, contextlib
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        cmd_runcheck(scene, func)
-    rc = json.loads(buf.getvalue())
-    if rc['issues']:
-        reasons.append(f"体检{len(rc['issues'])}项异常: " + '; '.join(i['type'] for i in rc['issues'][:3]))
-    if reasons:
-        out({'scene': scene, 'function': func, 'auto_ok': False, 'reasons': reasons})
-        return
-    for r in rows:
-        cmd_submit(json.dumps({'RemakeVoiceID': r['RemakeVoiceID'], 'task': 'A', 'verdict': 'OK',
-                               'reason': 'autocheck: 全匹配+体检零异常+文本全等+无标记'}, ensure_ascii=False))
-    out({'scene': scene, 'function': func, 'auto_ok': True, 'auto_ok_lines': len(rows)})
-
-def append_locked(path, line):
-    """跨进程安全追加：锁住文件首字节作互斥区再写，防止并发 submit 交错写坏 JSONL"""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'a', encoding='utf-8') as f:
+def append_locked(path, text):
+    """并发安全追加(verdicts.jsonl 多代理同时提交): 锁文件 + O_APPEND"""
+    import time
+    lock = path + '.lock'
+    _ms = None
+    try:
+        import msvcrt as _ms
+    except ImportError:
+        pass
+    with open(lock, 'w') as _lf:
+        if _ms:
+            for _ in range(50):
+                try:
+                    _ms.locking(_lf.fileno(), _ms.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.1)
         try:
-            import msvcrt
-            f.seek(0)
-            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-            f.seek(0, os.SEEK_END)
-            f.write(line)
-            f.flush()
-            f.seek(0)
-            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-        except ImportError:
-            import fcntl
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            f.write(line)
-            f.flush()
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            with open(path, 'a', encoding='utf-8') as _f:
+                _f.write(text)
+        finally:
+            if _ms:
+                try: _ms.locking(_lf.fileno(), _ms.LK_UNLCK, 1)
+                except Exception: pass
 
 def check_verdict(v):
-    need = {'RemakeVoiceID', 'verdict'}
-    if not isinstance(v, dict) or not need.issubset(v):
-        return f'缺少字段: {need - set(v if isinstance(v, dict) else {})}'
-    if v['verdict'] not in ('OK', 'WRONG', 'SUSPECT', 'FOUND', 'CANDIDATES', 'NO_VOICE', 'UNRESOLVED'):
-        return f'verdict非法: {v["verdict"]}'
-    if v['verdict'] == 'WRONG' and not v.get('correct_vid'):
-        return 'WRONG必须给correct_vid'
+    """裁定JSON校验: 返回错误串或None"""
+    if not isinstance(v, dict):
+        return '裁定必须是JSON对象'
+    rid = v.get('RemakeVoiceID')
+    if rid is None or str(rid).strip() == '':
+        return '缺少 RemakeVoiceID'
+    vd = v.get('verdict')
+    if vd not in ('OK', 'WRONG', 'SUSPECT', 'FOUND', 'CANDIDATES', 'NO_VOICE', 'UNRESOLVED'):
+        return 'verdict 必须是 OK/WRONG/SUSPECT/FOUND/CANDIDATES/NO_VOICE/UNRESOLVED 之一'
+    if v.get('task') is not None and v.get('task') not in ('A', 'B'):
+        return 'task 只能是 A(已配行) 或 B(未配行), 可省略'
+    cv_ = str(v.get('correct_vid') or '')
+    if vd in ('WRONG', 'FOUND') and cv_:
+        d = re.sub(r'\D', '', cv_)
+        if len(d) != 10:
+            return 'correct_vid 须为10位数字'
     return None
-
-def cmd_submit(raw):
-    try:
-        v = _jload(raw)
-    except Exception as e:
-        out(_usage_err('submit', f'JSON解析失败: {e}')); return
-    err = check_verdict(v)
-    if err:
-        out({'error': err, '要求': 'RemakeVoiceID, verdict∈{OK,WRONG,SUSPECT,FOUND,CANDIDATES,NO_VOICE,UNRESOLVED}'}); return
-    append_locked(os.path.join(_here, 'review_pack', 'verdicts.jsonl'),
-                  json.dumps(v, ensure_ascii=False) + '\n')
-    out({'ok': True, 'saved': v['RemakeVoiceID'], 'verdict': v['verdict']})
 
 def cmd_submitmany(raw):
     """批量提交: 一个进程写整批裁定(单次加锁一次IO), raw=JSON数组或stdin内容"""
@@ -629,7 +649,7 @@ def cmd_submitmap(scene, func, raw):
         out(_usage_err('submitmap', f'JSON解析失败: {e}')); return
     if not isinstance(mapping, dict):
         out({'error': 'submitmap 需要 JSON 对象 {"行号或id": "verdict"}'}); return
-    rows = [r for r in det if r['RemakeScenaScriptFilename'] == scene and r['RemakeFunction'] == func]
+    rows = [r for r in _det() if r['RemakeScenaScriptFilename'] == scene and r['RemakeFunction'] == func]
     if not rows:
         out({'error': f'未找到 {scene}/{func}'}); return
     done = _done_ids()
@@ -662,7 +682,7 @@ def cmd_autook():
     from rapidfuzz import fuzz
     done = _done_ids()
     blocks = defaultdict(list)
-    for r in det:
+    for r in _det():
         blocks[(r['RemakeScenaScriptFilename'], r['RemakeFunction'])].append(r)
     lines_out, skipped = [], []
     ok_blocks = ok_rows = 0
@@ -721,7 +741,7 @@ def cmd_autook():
 def cmd_rowhint(scene, func, key):
     """行级结构提示: 给定块内行(行号或RemakeVoiceID), 返回其锚点区间内的候选take
     优化1(锚点对齐器)的工具化出口, 供 find/findmany 之后的结构确认用。"""
-    rows = [r for r in det if r['RemakeScenaScriptFilename'] == scene and r['RemakeFunction'] == func]
+    rows = [r for r in _det() if r['RemakeScenaScriptFilename'] == scene and r['RemakeFunction'] == func]
     if not rows:
         out({'error': f'未找到块 {scene}/{func}'}); return
     rows.sort(key=lambda r: int(r['RemakeScenaScriptLineno']))
@@ -741,16 +761,22 @@ def cmd_rowhint(scene, func, key):
     vf = row['OldVoiceFilename']
     if vf:
         cur = vf[2:-1] if vf.startswith('ch') else vf
-    # 同录音组邻锚
-    g = cur[3:6] if cur else None
-    cand_g = [a for a in anchors if a[1][3:6] == g] if g else anchors
+    # 组定位 v2: 邻锚众数组优先(当前vid可能是跨场景支, 组会错)
+    from collections import Counter as _C2
+    _gcnt = _C2(a[1][3:6] for a in anchors)
+    g_nbr, _ = (_gcnt.most_common(1)[0] if _gcnt else (None, 0))
+    g_cur = cur[3:6] if cur else None
+    g = g_nbr or g_cur
+    group_conflict = bool(g_cur and g_nbr and g_cur != g_nbr)
+    cand_g = [a for a in anchors if a[1][3:6] == g]
     lo = max((a for a in cand_g if a[0] < line), default=None, key=lambda a: a[0])
     hi = min((a for a in cand_g if a[0] > line), default=None, key=lambda a: a[0])
-    if g is None and lo and hi and lo[1][3:6] == hi[1][3:6]:
-        g = lo[1][3:6]          # 未配行: 组从同组邻锚推导
     res = {'scene': scene, 'function': func, 'line': row['RemakeScenaScriptLineno'],
            'rid': row['RemakeVoiceID'], 'text': row['RemakeVoiceText'][:60],
-           'cur_vid': cur, 'group': g, 'lo_anchor': lo, 'hi_anchor': hi}
+           'cur_vid': cur, 'group': g, 'group_conflict': group_conflict,
+           'lo_anchor': lo, 'hi_anchor': hi}
+    if group_conflict:
+        res['note_group'] = f'当前vid组{g_cur}与邻锚众数组{g_nbr}不一致——现配可能是跨场景支, 区间按邻锚组计算'
     if not (lo and hi):
         res['note'] = '无同组双侧锚点, 区间不可用'
         out(res); return
@@ -763,9 +789,132 @@ def cmd_rowhint(scene, func, key):
         for vid, text in vid_pool.get((g, tk), {}).items():
             s = fuzz.ratio(n, cnorm(text)) if n else 0
             cands.append({'vid': vid, 'take': tk, 'sim': round(s, 1), 'text': text[:50]})
+    # 缺口探针: 区间内既不在结构锚也不在候选的序号, 若 AT9 文件存在则列出(未引用录音)
+    gap_takes = []
+    for t in range(ta + 1, tb):
+        tk = f'{t:04d}'
+        if tk in used: continue
+        hit = next((c for c in cands if c['take'] == tk), None)
+        if hit: continue
+        for b in _banks_for_group(g):
+            gv = b + g + tk
+            if gv in at9_set:
+                gap_takes.append({'vid': gv, 'take': tk, 'source': 'at9未引用',
+                                  'note': 'AT9音频存在但无结构/补录文本, 需听辨', 'at9_exists': True})
     cands.sort(key=lambda x: -x['sim'])
     res['interval'] = f'{ta:04d}-{tb:04d}'
     res['candidates'] = cands[:6]
+    if gap_takes:
+        res['gap_takes'] = gap_takes[:6]
+    out(res)
+
+def _banks_for_group(g):
+    """组内出现过的bank集合(用于缺口探针枚举同组各bank的AT9文件)"""
+    _bs = set()
+    for (_eg, _tk), _vs in vid_pool.items():
+        if _eg == g:
+            for _v in _vs: _bs.add(_v[:3])
+    return _bs or {b for b in ('001','003','004','005','006','007','008')}
+
+
+def _status_label(s):
+    if s == 'charid+T_NAME':
+        return 'char_id+T_NAME(原生speaker投票100%一致)'
+    if s.startswith('charid('):
+        return '原生speaker投票' + s[7:-1]
+    if s.startswith('cast_table'):
+        return 'cast表反查(' + s[11:-1] + ')'
+    if s.startswith('speaker_name'):
+        return '原生speaker_name'
+    if s.startswith('namebox_vote'):
+        return '名框投票(' + s[13:-1] + ')'
+    if s.startswith('inherited('):
+        return '继承自静态分析(' + s[10:-1] + ')'
+    if s == 'text_verified':
+        return '文本鉴别(台词自称/文体)'
+    return '未鉴别'
+
+def cmd_bank(code):
+    """EVO bank(=vid前3位) -> 全场景角色档案: 身份/槽位分布/显示名/场景列表/特殊出现(演员槽乱入)。
+    数据: data/evo_bank_index_{game}.json + evo_speaker_names_{game}.json (EVO日文本体推导)"""
+    code = re.sub(r'\D', '', code)[:3].zfill(3)
+    bi = {}
+    _p = resolve(f'evo_bank_index_{GAME}.json')
+    if _p:
+        bi = json.load(open(_p, encoding='utf-8')).get(code, {})
+    jp, cn = espeaker.bank_name(code, GAME)
+    if not bi and not jp:
+        out({'bank': code, 'found': False, 'note': '未知bank码(未在任何语音行中出现)'}); return
+    res = {'bank': code, 'found': True,
+           'name_jp': jp, 'name_cn': cn,
+           'identity_status': _status_label((espeaker._load(GAME) or {}).get('banks', {}).get(code, {}).get('status', '')),
+           'lines': bi.get('lines'), 'scene_count': bi.get('scene_count'),
+           'speaker_slots': bi.get('speaker_slots'),
+           'display_names_seen': bi.get('display_names_seen'),
+           'scenes': bi.get('scenes'),
+           'special_count': len(bi.get('special_identity_occurrences', []))}
+    sp = bi.get('special_identity_occurrences', [])
+    if sp:
+        res['special_examples'] = [{'scene': x['scene'], 'function': x['function'],
+                                    'talk_num': x['talk_num'], 'speaker': x['speaker'],
+                                    'text': x['text']} for x in sp[:5]]
+        res['special_note'] = '主角团以场景演员槽登场的记录(乱入/临时登场), 共%d条' % len(sp)
+    kb = espeaker._load(GAME) or {}
+    cid = (kb.get('bank_to_char_id') or {}).get(code)
+    if cid:
+        tn = kb.get('tname', [])
+        res['char_id'] = int(cid)
+        if int(cid) < len(tn) and tn[int(cid)]:
+            res['tname'] = tn[int(cid)]
+    out(res)
+
+def cmd_speaker(a, b=None):
+    """说话人辨析: 行级(场景,py行号)或实体级(--entity key)。
+    数据源: s7_build_voice_lookup.py 生成的 voice_lookup_index_sc.json。
+    返回: status(CONFIRMED/NO_VOICE/MULTI_SPEAKER/MULTI_OPTION/UNCERTAIN/NOT_FOUND)、
+    说话人ID/名字、运行时显示名(变装/匿名,日/中)、语音号、该行实际EVO匹配、
+    实体EVO映射(全局一致 global_unanimous / 场景依赖 scene_dependent / 多人共用前缀标注)。
+    规范: docs/voice_lookup.md"""
+    try:
+        from voice_lookup_query import VoiceLookup
+    except ImportError as e:
+        out({'error': f'查询模块不可用: {e}'}); return
+    try:
+        lk = VoiceLookup(GAME)
+    except SystemExit as e:
+        out({'error': str(e),
+             'fix': 'uv run python s7_build_voice_lookup.py --game sc --py-dir <日文py> [...]'}); return
+    if a == '--entity':
+        if not b:
+            out({'error': '用法: speaker --entity <说话人ID|显示名(日文)>; 列出全部: speaker --list <ID>'}); return
+        out(lk.entity(b)); return
+    if a == '--list':
+        try:
+            out({'entities': lk.list_entities(int(b)) if b else lk.list_entities()})
+        except ValueError:
+            out({'entities': lk.list_entities()}); return
+        return
+    if a is None or b is None or not b.isdigit():
+        out({'error': '用法: speaker <场景> <行号> | speaker --entity <key> | speaker --list <ID>'}); return
+    res = lk.lookup(a, int(b))
+    # EVO侧说话人知识库补全: 行级EVO speaker语义 + bank身份
+    em = (res or {}).get('evo_match') or {}
+    vid = em.get('voice_file') or em.get('voice_id')
+    if vid and isinstance(vid, str) and len(vid) >= 10:
+        _r = espeaker.resolve(em.get('speaker') or '0x0', vid, GAME)
+        if _r['kind']:
+            res['evo_speaker_kind'] = _r['kind']
+        if _r['name_jp']:
+            res['evo_speaker_name'] = _r['name_jp']
+        if _r['name_cn']:
+            res['evo_speaker_name_cn'] = _r['name_cn']
+    pfx = em.get('prefix')
+    if pfx:
+        _bjp, _bcn = espeaker.bank_name(pfx, GAME)
+        if _bjp:
+            res.setdefault('evo_match', {})['identity_jp'] = _bjp
+        if _bcn:
+            res['evo_match']['identity_cn'] = _bcn
     out(res)
 
 
@@ -773,17 +922,23 @@ if __name__ == '__main__':
     args = [a for a in sys.argv[1:]]
     if not args:
         print(__doc__); sys.exit(0)
+    if args[0] in ('help', '-h', '--help'):
+        print(__doc__); sys.exit(0)
     cmd, rest = args[0], args[1:]
-    if cmd == 'todo':
-        cmd_todo(int(rest[1]) if rest and rest[0]=='--n' and len(rest)>1 else (int(rest[0]) if rest and rest[0].isdigit() else 5))
-    elif cmd == 'claim':
-        cmd_claim(rest[0], rest[1] if len(rest) > 2 else None, rest[2] if len(rest) > 2 else None)
+    if cmd == 'claim':
+        if not rest:
+            out({'error': '缺少代理ID参数', 'usage': 'claim <代理ID> [场景 函数]'})
+        else:
+            cmd_claim(rest[0], rest[1] if len(rest) > 2 else None, rest[2] if len(rest) > 2 else None)
     elif cmd == 'release':
         cmd_release(rest[0], rest[1])
     elif cmd == 'pack':
         cmd_pack(rest[0], rest[1])
     elif cmd == 'vid':
-        cmd_vid(rest[0])
+        if not rest:
+            out({'error': '缺少语音ID参数', 'usage': 'vid <10位语音ID>'})
+        else:
+            cmd_vid(rest[0])
     elif cmd == 'rowhint':
         if len(rest) < 3:
             out(_usage_err('rowhint', '用法: rowhint <场景> <函数> <行号|RemakeVoiceID>'))
@@ -823,15 +978,18 @@ if __name__ == '__main__':
                 cmd_submitmap(rest[0], rest[1], raw)
     elif cmd == 'runcheck':
         cmd_runcheck(rest[0], rest[1])
-    elif cmd == 'submit':
-        raw = _raw_arg(rest)
-        if raw is None:
-            out(_usage_err('submit', '缺少单条裁定 JSON 参数'))
-        else:
-            cmd_submit(raw)
-    elif cmd == 'autocheck':
-        cmd_autocheck(rest[0], rest[1])
     elif cmd == 'autook':
         cmd_autook()
+    elif cmd == 'bank':
+        cmd_bank(rest[0] if rest else '')
+    elif cmd == 'speaker':
+        cmd_speaker(rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
     else:
-        out({'error': f'未知命令 {cmd}', '可用': 'todo claim release pack vid find findmany runcheck submit submitmany submitmap autocheck autook'})
+        import difflib
+        _known = ['claim', 'pack', 'release', 'submitmap', 'submitmany',
+                  'runcheck', 'vid', 'find', 'findmany', 'rowhint', 'speaker', 'bank', 'autook']
+        _sug = difflib.get_close_matches(cmd, _known, n=2)
+        out({'error': f'未知命令 {cmd}',
+             'closest': _sug,
+             'commands': '领包/提交: claim pack release submitmap submitmany | 证据: runcheck vid find findmany rowhint | 说话人: speaker bank | 运营: autook',
+             'hint': '单条裁定也用 submitmany; 逐条 submit/autocheck/todo 已移除'})

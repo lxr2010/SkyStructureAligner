@@ -94,7 +94,9 @@ uv run python rt.py autocheck <场景> <函数>   # 单块
 单文件网页（无构建、无依赖），支持：
 
 - EVO（og​​g）与 Remake（opus）双侧试听，本地拆包语音优先、在线 CDN 回退，双音量独立调节
-- 多选过滤器（脚本/判定/类型/说话人）、判定 chips、人工状态筛选、行多选/反选/导出
+- 说话人 R/E 双侧显示与筛选（remake_structure 对齐 + speaker_map 映射 + char_names 名字表，
+  `build_char_names.py` 可续跑补名字），「说话人不一致」一键过滤
+- 多选过滤器（脚本/判定/类型/说话人×2）、判定 chips、人工状态筛选、行多选/反选/导出
 - 行级人工校对编辑器：候选下拉（↑↓/滚轮切换并自动试听）、状态随语音自动联动、
   翻页/刷新不丢（localStorage）、导出 `manual_verdicts_<N>.jsonl`
 - `apply_manual_verdicts.py`：把人工裁定应用到 `*_detailed_corrected.csv`，产出

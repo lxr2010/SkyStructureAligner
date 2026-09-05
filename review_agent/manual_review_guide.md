@@ -135,11 +135,36 @@ wav/ogg/opus 会被建索引，之后优先从这里播放。目录会被记住�
 - **语音下拉**：EVO 有/无、Remake 有/无、两侧都有。
 - **人工状态**：仅未校对 / 仅已校对 / 按 confirm·change·novoice·suspect 细分。
 - **仅看有告警**：SpeakerCheck 或 VoiceReuseAlert 非空的行。
-- **搜索框**：对原文/译文/文件名/函数/注释做子串匹配（250ms 防抖）。
+- **搜索框**：对原文/译文/文件名/函数/注释/**说话人名**做子串匹配（250ms 防抖）。
 - **点列头排序**（ID、匹配列等）；分页每页 100 行。
 
+### 说话人（R/E 双侧）
+
+表格的「说话人 R/E」列：左半是 **Remake 侧**说话人，右半是**所配 EVO 语音**的说话人；
+两侧不一致时整格标红加 ⚠；带 ⚙ 标记的行有说话人注记（悬停看全文，如"说话人动态传参""npc 前缀"）。
+
+- **新版详表（31 列）**：直接读系统标注列——`RemakeSpeakerID`（R 侧说话码）、
+  `RemakeCharacterDisplay` / `EvoCharacterDisplay`（双侧显示名覆盖）及其
+  **`*Translation` 中文翻译列**、`SpeakerNote` / `EvoSpeakerNotes`（注记，进 tooltip 与搜索）。
+  无需任何对齐。
+- **说话人语言切换**：试听控制行的「说话人：日文/中文」下拉。中文模式优先取
+  `*Translation` 列，其次 `speaker_names_t_name_zh_sc.json`（简中 table.pac 的名字表，
+  经 speaker_map 反查 EVO 侧）；临时标签（如"青年の声"）无翻译时回退日文。
+- **旧版详表（24 列）回退**：R 侧由页面加载 `remake_structure` 按 场景/函数/块/文本
+  顺序对齐得出（离线验证 29305 行全命中，需服务器模式）。
+- 角色名优先级：Display 列 > `speaker_names_t_name_sc.json`（Remake 说话码→名，1178 条）
+  > speaker_map 反查 > char_names；查不到显示码。EVO 侧角色码取当前生效匹配的
+  `ch` 前缀（人工改配后自动跟随）。
+- **R说话人 / E说话人** 两个多选过滤器（码+名字，可搜索）；
+  chips 条上还有 **「说话人不一致」** 快捷筛选（点开只看两侧角色不同的行，再点恢复）。
+- **R说话人 / E说话人** 两个多选过滤器（码+名字，可搜索）；
+  chips 条上还有 **「说话人不一致」** 快捷筛选（点开只看两侧角色不同的行，再点恢复）。
+- 角色名来自 `char_names_sc.json`（码→名，渐进补全）：没有名字的码直接显示三位码。
+  名字表用 `build_char_names.py` 续跑补齐（走站点搜索 API，默认 6 秒/次，可反复续跑）。
+
 > **推荐的复核节奏**：先点 `SUSPECT`(21) 和 `WRONG`(96) chips 清掉最可疑的，
-> 再过 `CANDIDATES`(94)，然后用「仅未校对」+ 语音=EVO有 逐行听 matched 行抽查。
+> 再过 `CANDIDATES`(94)，然后用「仅未校对」+ 语音=EVO有 逐行听 matched 行抽查；
+> 「说话人不一致」chip 适合快速扫配音张冠李戴的行。
 
 ---
 
